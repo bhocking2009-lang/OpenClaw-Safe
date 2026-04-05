@@ -249,4 +249,100 @@ describe('Gateway HTTP API', () => {
     expect(res.status).toBe(200);
     expect(res.body.items.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('GET /v1/memory respects numeric limit query param', async () => {
+    for (let i = 0; i < 5; i++) {
+      await request(app)
+        .post('/v1/memory')
+        .set('Authorization', 'Bearer ')
+        .send({ namespace: 'ns-limit', kind: 'factual', content: `fact ${i}` });
+    }
+
+    const res = await request(app)
+      .get('/v1/memory?namespace=ns-limit&limit=2')
+      .set('Authorization', 'Bearer ');
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBe(2);
+  });
+
+  it('GET /v1/memory handles non-numeric limit gracefully (returns all)', async () => {
+    await request(app)
+      .post('/v1/memory')
+      .set('Authorization', 'Bearer ')
+      .send({ namespace: 'ns-badlimit', kind: 'factual', content: 'a fact' });
+
+    // Non-numeric limit should be ignored, not crash
+    const res = await request(app)
+      .get('/v1/memory?namespace=ns-badlimit&limit=abc')
+      .set('Authorization', 'Bearer ');
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Principal validation
+  it('POST /v1/auth/principals rejects invalid trust level', async () => {
+    const res = await request(app)
+      .post('/v1/auth/principals')
+      .set('Authorization', 'Bearer ')
+      .send({ type: 'user', identities: {}, trustLevel: 'superadmin', policyGroup: 'default' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/trust level/i);
+  });
+
+  it('POST /v1/auth/principals rejects invalid principal type', async () => {
+    const res = await request(app)
+      .post('/v1/auth/principals')
+      .set('Authorization', 'Bearer ')
+      .send({ type: 'root', identities: {}, trustLevel: 'high', policyGroup: 'default' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/principal type/i);
+  });
+
+  // Approval duration passthrough
+  it('POST /v1/approvals passes duration from request body', async () => {
+    const res = await request(app)
+      .post('/v1/approvals')
+      .set('Authorization', 'Bearer ')
+      .send({
+        taskId: 't-1',
+        requestedAction: 'browse(example.com)',
+        riskClass: 'D',
+        proposedScope: { domain: 'example.com' },
+        humanReadableDiff: 'Browse to example.com',
+        duration: 'session',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.duration).toBe('session');
+  });
+
+  it('POST /v1/approvals defaults duration to once when not supplied', async () => {
+    const res = await request(app)
+      .post('/v1/approvals')
+      .set('Authorization', 'Bearer ')
+      .send({
+        taskId: 't-1',
+        requestedAction: 'browse(example.com)',
+        riskClass: 'D',
+        proposedScope: {},
+        humanReadableDiff: 'Browse',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.duration).toBe('once');
+  });
+
+  it('POST /v1/approvals falls back to once for invalid duration value', async () => {
+    const res = await request(app)
+      .post('/v1/approvals')
+      .set('Authorization', 'Bearer ')
+      .send({
+        taskId: 't-1',
+        requestedAction: 'browse(example.com)',
+        riskClass: 'D',
+        proposedScope: {},
+        humanReadableDiff: 'Browse',
+        duration: 'forever',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.duration).toBe('once');
+  });
 });

@@ -30,6 +30,9 @@ import {
   TrustLevel,
   SessionMode,
   ToolRiskClass,
+  MemoryKind,
+  RedactClass,
+  ApprovalDuration,
 } from './types';
 import { PolicyEngine } from './policy';
 import { ToolBroker } from './broker';
@@ -140,11 +143,26 @@ export class Gateway {
         trustLevel: TrustLevel;
         policyGroup: string;
       };
+
+      const validTypes: PrincipalType[] = ['operator', 'user', 'child_agent', 'system'];
+      const validTrustLevels: TrustLevel[] = ['high', 'medium', 'low'];
+      const requestedType = body.type ?? 'user';
+      const requestedTrustLevel = body.trustLevel ?? 'medium';
+
+      if (!validTypes.includes(requestedType)) {
+        res.status(400).json({ error: `Invalid principal type. Must be one of: ${validTypes.join(', ')}` });
+        return;
+      }
+      if (!validTrustLevels.includes(requestedTrustLevel)) {
+        res.status(400).json({ error: `Invalid trust level. Must be one of: ${validTrustLevels.join(', ')}` });
+        return;
+      }
+
       const principal: Principal = {
         id: uuidv4(),
-        type: body.type ?? 'user',
+        type: requestedType,
         identities: body.identities ?? {},
-        trustLevel: body.trustLevel ?? 'medium',
+        trustLevel: requestedTrustLevel,
         policyGroup: body.policyGroup ?? 'default',
         createdAt: new Date().toISOString(),
       };
@@ -265,10 +283,14 @@ export class Gateway {
         riskClass: ToolRiskClass;
         proposedScope: Record<string, unknown>;
         humanReadableDiff: string;
+        duration?: ApprovalDuration;
       };
+      const validDurations: ApprovalDuration[] = ['once', 'session', 'task', 'policy_rule'];
+      const duration: ApprovalDuration =
+        body.duration && validDurations.includes(body.duration) ? body.duration : 'once';
       const request = this.deps.approvalStore.createRequest({
         ...body,
-        duration: 'once',
+        duration,
       });
       this.emitEvent({ type: 'approval.requested', payload: { request }, emittedAt: new Date().toISOString() });
       res.status(201).json(request);
@@ -311,7 +333,20 @@ export class Gateway {
     });
 
     r.get('/memory', (req, res) => {
-      const items = this.deps.memoryStore.query(req.query as Parameters<MemoryStore['query']>[0]);
+      const q = req.query as Record<string, string | undefined>;
+      const query: Parameters<MemoryStore['query']>[0] = {};
+      if (q.namespace) query.namespace = q.namespace;
+      if (q.kind) query.kind = q.kind as MemoryKind;
+      if (q.redactClass) query.redactClass = q.redactClass as RedactClass;
+      if (q.minConfidence !== undefined) {
+        const parsed = parseFloat(q.minConfidence);
+        if (!isNaN(parsed)) query.minConfidence = parsed;
+      }
+      if (q.limit !== undefined) {
+        const parsed = parseInt(q.limit, 10);
+        if (!isNaN(parsed)) query.limit = parsed;
+      }
+      const items = this.deps.memoryStore.query(query);
       res.json({ items });
     });
 

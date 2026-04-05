@@ -80,6 +80,11 @@ export interface AgentRuntimeOptions {
   broker: ToolBroker;
   policyEngine: PolicyEngine;
   onEvent?: EventEmitter;
+  /**
+   * Called whenever the session budget is reduced. Callers that hold a
+   * SessionStore should persist the new value via updateSession().
+   */
+  onBudgetUpdate?: (remaining: number) => void;
   /** Maximum number of tool-call rounds before stopping */
   maxRounds?: number;
 }
@@ -94,6 +99,8 @@ export interface AgentTurn {
     denied: boolean;
   }>;
   usage?: { promptTokens: number; completionTokens: number };
+  /** Remaining session token budget after this turn. Callers should persist this. */
+  remainingBudget: number;
 }
 
 /**
@@ -140,6 +147,7 @@ export class AgentRuntime {
       userMessage,
       assistantMessage: '',
       toolInvocations: [],
+      remainingBudget: session.budget,
     };
 
     // Agentic loop: model → tool calls → model
@@ -156,6 +164,9 @@ export class AgentRuntime {
         turn.usage = response.usage;
         // Deduct from budget (simplified)
         session.budget = Math.max(0, session.budget - response.usage.completionTokens);
+        turn.remainingBudget = session.budget;
+        // Notify caller so it can persist the updated budget to the session store
+        this.options.onBudgetUpdate?.(session.budget);
       }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -229,6 +240,7 @@ export class AgentRuntime {
       ];
     }
 
+    turn.remainingBudget = session.budget;
     return turn;
   }
 

@@ -186,6 +186,55 @@ describe('AgentRuntime', () => {
 
     auditLog.close();
   });
+
+  it('turn includes remainingBudget equal to starting budget when no usage reported', async () => {
+    const { broker, policyEngine, auditLog } = buildBroker();
+    const session = makeSession(); // budget: 100_000
+
+    const modelProvider = new StubModelProvider([
+      { content: 'No token usage reported.' },
+    ]);
+
+    const runtime = new AgentRuntime({
+      principal: makePrincipal(),
+      session,
+      task: makeTask(),
+      modelProvider,
+      broker,
+      policyEngine,
+    });
+
+    const turn = await runtime.process('Hello.');
+    expect(turn.remainingBudget).toBe(100_000);
+
+    auditLog.close();
+  });
+
+  it('turn remainingBudget decreases when usage is reported and onBudgetUpdate is called', async () => {
+    const { broker, policyEngine, auditLog } = buildBroker();
+    const session = makeSession(); // budget: 100_000
+
+    const modelProvider = new StubModelProvider([
+      { content: 'Token-consuming response.', usage: { promptTokens: 10, completionTokens: 50 } },
+    ]);
+
+    const budgetUpdates: number[] = [];
+    const runtime = new AgentRuntime({
+      principal: makePrincipal(),
+      session,
+      task: makeTask(),
+      modelProvider,
+      broker,
+      policyEngine,
+      onBudgetUpdate: (remaining) => budgetUpdates.push(remaining),
+    });
+
+    const turn = await runtime.process('Count tokens.');
+    expect(turn.remainingBudget).toBe(100_000 - 50);
+    expect(budgetUpdates).toContain(100_000 - 50);
+
+    auditLog.close();
+  });
 });
 
 describe('StubModelProvider', () => {
