@@ -1,1 +1,0 @@
-{"version":3,"file":"webchat.d.ts","sourceRoot":"","sources":["../../src/channels/webchat.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,WAAW,EAAE,iBAAiB,EAAE,MAAM,QAAQ,CAAC;AAExD,qBAAa,cAAe,SAAQ,WAAW;IAC7C,QAAQ,CAAC,WAAW,aAAa;IAE3B,WAAW,CAAC,YAAY,EAAE,MAAM,EAAE,KAAK,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC;IAIrE,cAAc,CAAC,OAAO,EAAE,OAAO,GAAG,iBAAiB;CASpD"}

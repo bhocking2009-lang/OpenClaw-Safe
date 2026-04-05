@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: openclaw-safe
-Version: 0.1.0
-Summary: Secure version of OpenClaw with proper security protocols for home use
-License: MIT
-Requires-Python: >=3.10
-Provides-Extra: dev
-Requires-Dist: pytest>=7.4; extra == "dev"
-Requires-Dist: pytest-cov; extra == "dev"

@@ -1,1 +1,0 @@
-{"version":3,"file":"principal.d.ts","sourceRoot":"","sources":["../../src/models/principal.ts"],"names":[],"mappings":"AAEA,oBAAY,aAAa;IACvB,QAAQ,aAAa;IACrB,MAAM,WAAW;IACjB,cAAc,mBAAmB;CAClC;AAED,MAAM,WAAW,SAAS;IACxB,EAAE,EAAE,MAAM,CAAC;IACX,IAAI,EAAE,MAAM,CAAC;IACb,IAAI,EAAE,aAAa,CAAC;CACrB;AAED,wBAAgB,eAAe,CAAC,IAAI,EAAE,MAAM,EAAE,IAAI,EAAE,aAAa,GAAG,SAAS,CAE5E"}
