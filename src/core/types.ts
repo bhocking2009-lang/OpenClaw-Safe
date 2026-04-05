@@ -140,6 +140,10 @@ export interface Artifact {
   provenanceId: string;
   checksum: string;
   retentionClass: RetentionClass;
+  /** Optional human-readable label for the artifact */
+  label?: string;
+  /** The tool invocation ID that produced this artifact (for direct lookup) */
+  invocationId?: string;
   createdAt: string;
 }
 
@@ -195,6 +199,21 @@ export interface PolicyDecision {
   requiresApproval: boolean;
   allowedRuntimeTarget?: RuntimeTarget;
   auditRequired: boolean;
+  /** The ID of the rule that matched and produced this decision. */
+  matchedRuleId?: string;
+  /**
+   * Full evaluation trace — only populated by PolicyEngine.explain().
+   * Each entry shows one rule that was evaluated, whether it matched, and why.
+   */
+  evaluationTrace?: PolicyEvaluationStep[];
+}
+
+export interface PolicyEvaluationStep {
+  ruleId: string;
+  ruleDescription: string;
+  matched: boolean;
+  /** The first matcher that did NOT match, when matched=false. */
+  failedMatcher?: string;
 }
 
 export interface ToolSchema {

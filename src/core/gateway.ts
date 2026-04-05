@@ -42,7 +42,7 @@ import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
 import { ArtifactStore } from './artifacts';
 import { PolicyRuleStore, validatePolicyRule } from './policy-store';
-import { buildReplayPack, formatExecutionTrace } from './replay';
+import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity } from './replay';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
@@ -280,6 +280,61 @@ export class Gateway {
         return;
       }
       res.json(pack);
+    });
+
+    // Audit integrity check for a session
+    r.get('/sessions/:id/audit-integrity', (req, res) => {
+      const session = this.deps.sessionStore.getSession(req.params.id);
+      if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+      const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      const result = checkAuditIntegrity(pack);
+      res.status(result.valid ? 200 : 409).json(result);
+    });
+
+    // Policy explain — evaluate a context and return decision with trace
+    r.post('/policy/explain', (req, res) => {
+      const body = req.body as {
+        toolName?: unknown;
+        toolRiskClass?: unknown;
+        runtimeTarget?: unknown;
+        principalId?: unknown;
+        sessionId?: unknown;
+      };
+
+      if (!body.toolName || typeof body.toolName !== 'string') {
+        res.status(400).json({ error: 'toolName is required and must be a string' });
+        return;
+      }
+      if (!body.toolRiskClass || typeof body.toolRiskClass !== 'string') {
+        res.status(400).json({ error: 'toolRiskClass is required and must be a string' });
+        return;
+      }
+      if (!body.principalId || typeof body.principalId !== 'string') {
+        res.status(400).json({ error: 'principalId is required and must be a string' });
+        return;
+      }
+      if (!body.sessionId || typeof body.sessionId !== 'string') {
+        res.status(400).json({ error: 'sessionId is required and must be a string' });
+        return;
+      }
+
+      const principal = this.principals.get(body.principalId);
+      if (!principal) { res.status(404).json({ error: 'Principal not found' }); return; }
+
+      const session = this.deps.sessionStore.getSession(body.sessionId);
+      if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+
+      const ctx = {
+        principal,
+        session,
+        toolName: body.toolName,
+        toolRiskClass: body.toolRiskClass as import('./types').ToolRiskClass,
+        runtimeTarget: (typeof body.runtimeTarget === 'string' ? body.runtimeTarget : 'sandbox') as import('./types').RuntimeTarget,
+        approvalState: 'pending' as const,
+      };
+
+      const decision = this.deps.policyEngine.explain(ctx);
+      res.json(decision);
     });
 
     // ----- Tasks -----

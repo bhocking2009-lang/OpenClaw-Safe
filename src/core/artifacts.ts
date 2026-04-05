@@ -31,10 +31,13 @@ export class ArtifactStore {
         provenance_id TEXT NOT NULL,
         checksum TEXT NOT NULL,
         retention_class TEXT NOT NULL DEFAULT 'session',
+        label TEXT,
+        invocation_id TEXT,
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_artifacts_provenance ON artifacts(provenance_id);
       CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(type);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_invocation ON artifacts(invocation_id);
     `);
   }
 
@@ -44,6 +47,8 @@ export class ArtifactStore {
     provenanceId: string;
     checksum: string;
     retentionClass?: RetentionClass;
+    label?: string;
+    invocationId?: string;
   }): Artifact {
     const artifact: Artifact = {
       id: uuidv4(),
@@ -52,12 +57,14 @@ export class ArtifactStore {
       provenanceId: params.provenanceId,
       checksum: params.checksum,
       retentionClass: params.retentionClass ?? 'session',
+      label: params.label,
+      invocationId: params.invocationId,
       createdAt: new Date().toISOString(),
     };
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, type, uri, provenance_id, checksum, retention_class, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO artifacts (id, type, uri, provenance_id, checksum, retention_class, label, invocation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         artifact.id,
@@ -66,6 +73,8 @@ export class ArtifactStore {
         artifact.provenanceId,
         artifact.checksum,
         artifact.retentionClass,
+        artifact.label ?? null,
+        artifact.invocationId ?? null,
         artifact.createdAt
       );
     return artifact;
@@ -83,6 +92,14 @@ export class ArtifactStore {
       this.db
         .prepare('SELECT * FROM artifacts WHERE provenance_id = ? ORDER BY created_at ASC')
         .all(provenanceId) as RawArtifact[]
+    ).map(deserialize);
+  }
+
+  listByInvocation(invocationId: string): Artifact[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM artifacts WHERE invocation_id = ? ORDER BY created_at ASC')
+        .all(invocationId) as RawArtifact[]
     ).map(deserialize);
   }
 
@@ -114,6 +131,8 @@ interface RawArtifact {
   provenance_id: string;
   checksum: string;
   retention_class: string;
+  label: string | null;
+  invocation_id: string | null;
   created_at: string;
 }
 
@@ -125,6 +144,13 @@ function deserialize(row: RawArtifact): Artifact {
     provenanceId: row.provenance_id,
     checksum: row.checksum,
     retentionClass: row.retention_class as RetentionClass,
+    label: row.label ?? undefined,
+    invocationId: row.invocation_id ?? undefined,
     createdAt: row.created_at,
   };
+}
+
+
+export interface ArtifactStoreOptions {
+  dbPath: string;
 }

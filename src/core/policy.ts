@@ -19,6 +19,7 @@
 import {
   PolicyContext,
   PolicyDecision,
+  PolicyEvaluationStep,
   PolicyMode,
   ToolRiskClass,
   RuntimeTarget,
@@ -205,6 +206,44 @@ export class PolicyEngine {
       reason: 'No matching policy rule; default deny',
       requiresApproval: false,
       auditRequired: true,
+      matchedRuleId: undefined,
+    };
+  }
+
+  /**
+   * Evaluate the policy and return a decision with a full evaluation trace.
+   *
+   * The trace records every rule that was checked in order, whether it matched,
+   * and — when it did NOT match — which matcher caused the mismatch.
+   *
+   * This method is intentionally pure: it has no side effects and does not
+   * write to any store. Use it for operator debugging and audit explanation.
+   */
+  explain(ctx: PolicyContext): PolicyDecision {
+    const trace: PolicyEvaluationStep[] = [];
+
+    for (const rule of this.rules) {
+      const { matched, failedMatcher } = this.matchesRuleVerbose(rule, ctx);
+      trace.push({
+        ruleId: rule.id,
+        ruleDescription: rule.description,
+        matched,
+        failedMatcher,
+      });
+      if (matched) {
+        const decision = this.buildDecision(rule, ctx);
+        return { ...decision, evaluationTrace: trace };
+      }
+    }
+
+    // Fallback deny — no rule matched
+    return {
+      mode: 'deny',
+      reason: 'No matching policy rule; default deny',
+      requiresApproval: false,
+      auditRequired: true,
+      matchedRuleId: undefined,
+      evaluationTrace: trace,
     };
   }
 
@@ -228,21 +267,35 @@ export class PolicyEngine {
   }
 
   private matchesRule(rule: PolicyRule, ctx: PolicyContext): boolean {
+    return this.matchesRuleVerbose(rule, ctx).matched;
+  }
+
+  private matchesRuleVerbose(
+    rule: PolicyRule,
+    ctx: PolicyContext
+  ): { matched: boolean; failedMatcher?: string } {
     const m = rule.match;
 
-    if (m.principalTypes && !m.principalTypes.includes(ctx.principal.type)) return false;
-    if (m.trustLevels && !m.trustLevels.includes(ctx.principal.trustLevel)) return false;
-    if (m.policyGroups && !m.policyGroups.includes(ctx.principal.policyGroup)) return false;
-    if (m.toolNames && !m.toolNames.includes(ctx.toolName)) return false;
-    if (m.riskClasses && !m.riskClasses.includes(ctx.toolRiskClass)) return false;
-    if (m.sessionModes && !m.sessionModes.includes(ctx.session.mode)) return false;
+    if (m.principalTypes && !m.principalTypes.includes(ctx.principal.type))
+      return { matched: false, failedMatcher: 'principalTypes' };
+    if (m.trustLevels && !m.trustLevels.includes(ctx.principal.trustLevel))
+      return { matched: false, failedMatcher: 'trustLevels' };
+    if (m.policyGroups && !m.policyGroups.includes(ctx.principal.policyGroup))
+      return { matched: false, failedMatcher: 'policyGroups' };
+    if (m.toolNames && !m.toolNames.includes(ctx.toolName))
+      return { matched: false, failedMatcher: 'toolNames' };
+    if (m.riskClasses && !m.riskClasses.includes(ctx.toolRiskClass))
+      return { matched: false, failedMatcher: 'riskClasses' };
+    if (m.sessionModes && !m.sessionModes.includes(ctx.session.mode))
+      return { matched: false, failedMatcher: 'sessionModes' };
     if (m.requiresElevation !== undefined && m.requiresElevation !== ctx.session.elevationState)
-      return false;
+      return { matched: false, failedMatcher: 'requiresElevation' };
     if (m.networkDomains && ctx.networkDomain && !m.networkDomains.includes(ctx.networkDomain))
-      return false;
-    if (m.approvalStates && !m.approvalStates.includes(ctx.approvalState)) return false;
+      return { matched: false, failedMatcher: 'networkDomains' };
+    if (m.approvalStates && !m.approvalStates.includes(ctx.approvalState))
+      return { matched: false, failedMatcher: 'approvalStates' };
 
-    return true;
+    return { matched: true };
   }
 
   private buildDecision(rule: PolicyRule, ctx: PolicyContext): PolicyDecision {
@@ -258,6 +311,7 @@ export class PolicyEngine {
       requiresApproval,
       allowedRuntimeTarget: rule.allowedRuntimeTarget,
       auditRequired: rule.auditRequired,
+      matchedRuleId: rule.id,
     };
   }
 }
