@@ -273,7 +273,10 @@ export class Gateway {
       if (!session) { res.status(404).json({ error: 'Not found' }); return; }
       const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
       if ((req.query as Record<string, string | undefined>)['format'] === 'text') {
-        res.type('text/plain').send(formatExecutionTrace(pack));
+        res
+          .type('text/plain; charset=utf-8')
+          .set('X-Content-Type-Options', 'nosniff')
+          .send(formatExecutionTrace(pack));
         return;
       }
       res.json(pack);
