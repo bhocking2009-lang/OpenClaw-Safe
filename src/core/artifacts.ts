@@ -150,7 +150,3 @@ function deserialize(row: RawArtifact): Artifact {
   };
 }
 
-
-export interface ArtifactStoreOptions {
-  dbPath: string;
-}

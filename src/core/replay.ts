@@ -490,30 +490,3 @@ export function checkAuditIntegrity(pack: ReplayPack): AuditIntegrityResult {
   return { valid: violations.length === 0, violations };
 }
 
-// ---------------------------------------------------------------------------
-// Replay pack shape
-// ---------------------------------------------------------------------------
-
-export interface ReplayPackManifest {
-  version: '1';
-  sessionId: string;
-  exportedAt: string;
-  recordCount: number;
-  artifactCount: number;
-  toolsInvoked: string[];
-  principalsInvolved: string[];
-  /** Number of broker denials recorded in this session */
-  denialCount: number;
-  /** Number of completed tool executions (tool.finished events) */
-  executionCount: number;
-  /** Number of approval-related events (approval.requested + approval.resolved) */
-  approvalCount: number;
-  /** Wall-clock duration of the session in ms (last record − first record) */
-  durationMs: number | null;
-}
-
-export interface ReplayPack {
-  manifest: ReplayPackManifest;
-  auditRecords: AuditRecord[];
-  artifacts: Artifact[];
-}

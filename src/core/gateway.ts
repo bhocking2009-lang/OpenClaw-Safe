@@ -276,6 +276,7 @@ export class Gateway {
         res
           .type('text/plain; charset=utf-8')
           .set('X-Content-Type-Options', 'nosniff')
+          .set('Content-Disposition', 'attachment; filename="execution-trace.txt"')
           .send(formatExecutionTrace(pack));
         return;
       }
