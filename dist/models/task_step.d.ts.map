@@ -1,0 +1,1 @@
+{"version":3,"file":"task_step.d.ts","sourceRoot":"","sources":["../../src/models/task_step.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,cAAc,EAAE,MAAM,mBAAmB,CAAC;AAEnD,MAAM,WAAW,QAAQ;IACvB,EAAE,EAAE,MAAM,CAAC;IACX,WAAW,EAAE,MAAM,CAAC;IACpB,SAAS,EAAE,IAAI,CAAC;IAChB,WAAW,EAAE,cAAc,EAAE,CAAC;CAC/B;AAED,wBAAgB,cAAc,CAAC,WAAW,EAAE,MAAM,GAAG,QAAQ,CAO5D"}
