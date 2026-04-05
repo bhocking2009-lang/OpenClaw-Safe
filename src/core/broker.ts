@@ -24,6 +24,7 @@ import {
 } from './types';
 import { PolicyEngine } from './policy';
 import { AuditLog } from './audit';
+import { ArtifactStore } from './artifacts';
 
 // ---------------------------------------------------------------------------
 // Worker interface
@@ -73,15 +74,18 @@ export class ToolBroker {
   private policyEngine: PolicyEngine;
   private auditLog: AuditLog;
   private approvalResolver?: ApprovalResolver;
+  private artifactStore?: ArtifactStore;
 
   constructor(
     policyEngine: PolicyEngine,
     auditLog: AuditLog,
-    approvalResolver?: ApprovalResolver
+    approvalResolver?: ApprovalResolver,
+    artifactStore?: ArtifactStore
   ) {
     this.policyEngine = policyEngine;
     this.auditLog = auditLog;
     this.approvalResolver = approvalResolver;
+    this.artifactStore = artifactStore;
   }
 
   // ---------------------------------------------------------------------------
@@ -289,6 +293,18 @@ export class ToolBroker {
     if (receipt) {
       invocation.result = receipt;
       invocation.diffSummary = receipt.fileDiffs?.join('\n');
+
+      // Persist any artifacts returned by the worker
+      if (this.artifactStore && receipt.artifacts && receipt.artifacts.length > 0) {
+        for (const ref of receipt.artifacts) {
+          this.artifactStore.store({
+            type: 'file',
+            uri: ref.uri,
+            provenanceId: request.taskId,
+            checksum: ref.checksum,
+          });
+        }
+      }
     }
 
     // Emit tool.finished audit record

@@ -34,12 +34,15 @@ import {
   RedactClass,
   ApprovalDuration,
 } from './types';
-import { PolicyEngine } from './policy';
+import { PolicyEngine, PolicyRule, DEFAULT_POLICY_RULES } from './policy';
 import { ToolBroker } from './broker';
 import { AuditLog } from './audit';
 import { SessionStore } from './session';
 import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
+import { ArtifactStore } from './artifacts';
+import { PolicyRuleStore } from './policy-store';
+import { buildReplayPack } from './replay';
 
 export interface GatewayConfig {
   /** Bind host. Defaults to 127.0.0.1 (loopback only). */
@@ -66,6 +69,8 @@ export interface GatewayDependencies {
   sessionStore: SessionStore;
   approvalStore: ApprovalStore;
   memoryStore: MemoryStore;
+  artifactStore?: ArtifactStore;
+  policyRuleStore?: PolicyRuleStore;
 }
 
 export class Gateway {
@@ -232,10 +237,39 @@ export class Gateway {
     });
 
     r.patch('/sessions/:id', (req, res) => {
-      const updated = this.deps.sessionStore.updateSession(req.params.id, req.body as Partial<Session>);
+      const body = req.body as { mode?: unknown; budget?: unknown; elevationState?: unknown };
+      const validModes: SessionMode[] = ['interactive', 'task', 'review', 'readonly'];
+
+      if (body.mode !== undefined && !validModes.includes(body.mode as SessionMode)) {
+        res.status(400).json({ error: `Invalid mode. Must be one of: ${validModes.join(', ')}` });
+        return;
+      }
+      if (body.budget !== undefined && (typeof body.budget !== 'number' || body.budget < 0 || !Number.isFinite(body.budget))) {
+        res.status(400).json({ error: 'budget must be a non-negative finite number' });
+        return;
+      }
+      if (body.elevationState !== undefined && typeof body.elevationState !== 'boolean') {
+        res.status(400).json({ error: 'elevationState must be a boolean' });
+        return;
+      }
+
+      const updates: Parameters<typeof this.deps.sessionStore.updateSession>[1] = {};
+      if (body.mode !== undefined) updates.mode = body.mode as SessionMode;
+      if (body.budget !== undefined) updates.budget = body.budget as number;
+      if (body.elevationState !== undefined) updates.elevationState = body.elevationState as boolean;
+
+      const updated = this.deps.sessionStore.updateSession(req.params.id, updates);
       if (!updated) { res.status(404).json({ error: 'Not found' }); return; }
       this.emitEvent({ type: 'session.updated', payload: { session: updated }, emittedAt: new Date().toISOString() });
       res.json(updated);
+    });
+
+    // Replay / export pack for a session
+    r.get('/sessions/:id/replay-export', (req, res) => {
+      const session = this.deps.sessionStore.getSession(req.params.id);
+      if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+      const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      res.json(pack);
     });
 
     // ----- Tasks -----
@@ -264,11 +298,73 @@ export class Gateway {
     });
 
     r.patch('/tasks/:id/state', (req, res) => {
-      const { state, executorId } = req.body as { state: string; executorId?: string };
-      const updated = this.deps.sessionStore.updateTaskState(req.params.id, state as Task['state'], executorId);
+      const validStates: Task['state'][] = ['pending', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled'];
+      const { state, executorId } = req.body as { state?: unknown; executorId?: unknown };
+      if (!state || !validStates.includes(state as Task['state'])) {
+        res.status(400).json({ error: `Invalid state. Must be one of: ${validStates.join(', ')}` });
+        return;
+      }
+      if (executorId !== undefined && typeof executorId !== 'string') {
+        res.status(400).json({ error: 'executorId must be a string' });
+        return;
+      }
+      const updated = this.deps.sessionStore.updateTaskState(
+        req.params.id,
+        state as Task['state'],
+        executorId as string | undefined
+      );
       if (!updated) { res.status(404).json({ error: 'Not found' }); return; }
       this.emitEvent({ type: 'task.updated', payload: { task: updated }, emittedAt: new Date().toISOString() });
       res.json(updated);
+    });
+
+    /**
+     * Delegate a child task from a parent task.
+     * The child's capabilitySet is strictly the intersection of the parent's
+     * capabilitySet and the requested capabilities — it can never be broader.
+     */
+    r.post('/tasks/:id/delegate', (req, res) => {
+      const parent = this.deps.sessionStore.getTask(req.params.id);
+      if (!parent) { res.status(404).json({ error: 'Parent task not found' }); return; }
+
+      const body = req.body as {
+        title?: unknown;
+        requestedCapabilities?: unknown;
+        sandboxClass?: unknown;
+        deadline?: unknown;
+      };
+
+      if (!body.title || typeof body.title !== 'string') {
+        res.status(400).json({ error: 'title is required and must be a string' });
+        return;
+      }
+      if (!Array.isArray(body.requestedCapabilities) || !body.requestedCapabilities.every((c) => typeof c === 'string')) {
+        res.status(400).json({ error: 'requestedCapabilities must be an array of strings' });
+        return;
+      }
+
+      // Enforce intersection: child cannot exceed parent capabilities
+      const requested = body.requestedCapabilities as string[];
+      const disallowed = requested.filter((c) => !parent.capabilitySet.includes(c));
+      if (disallowed.length > 0) {
+        res.status(400).json({
+          error: `Requested capabilities not in parent capabilitySet: ${disallowed.join(', ')}`,
+        });
+        return;
+      }
+
+      const childTask = this.deps.sessionStore.createTask({
+        sessionId: parent.sessionId,
+        title: body.title,
+        ownerId: parent.ownerId,
+        capabilitySet: requested,
+        sandboxClass: typeof body.sandboxClass === 'string' ? body.sandboxClass : parent.sandboxClass,
+        parentTaskId: parent.id,
+        deadline: typeof body.deadline === 'string' ? body.deadline : undefined,
+      });
+
+      this.emitEvent({ type: 'task.updated', payload: { task: childTask }, emittedAt: new Date().toISOString() });
+      res.status(201).json({ childTask });
     });
 
     // ----- Approvals -----
@@ -285,6 +381,17 @@ export class Gateway {
         humanReadableDiff: string;
         duration?: ApprovalDuration;
       };
+
+      if (!body.taskId || !body.requestedAction || !body.humanReadableDiff) {
+        res.status(400).json({ error: 'taskId, requestedAction, and humanReadableDiff are required' });
+        return;
+      }
+      const validRiskClasses: ToolRiskClass[] = ['A', 'B', 'C', 'D', 'E', 'F'];
+      if (!validRiskClasses.includes(body.riskClass)) {
+        res.status(400).json({ error: `Invalid riskClass. Must be one of: ${validRiskClasses.join(', ')}` });
+        return;
+      }
+
       const validDurations: ApprovalDuration[] = ['once', 'session', 'task', 'policy_rule'];
       const duration: ApprovalDuration =
         body.duration && validDurations.includes(body.duration) ? body.duration : 'once';
@@ -297,16 +404,32 @@ export class Gateway {
     });
 
     r.post('/approvals/:id/resolve', (req, res) => {
-      const { approverId, outcome } = req.body as { approverId: string; outcome: 'approved' | 'denied' };
+      const { approverId, outcome } = req.body as { approverId?: unknown; outcome?: unknown };
+      if (!approverId || typeof approverId !== 'string') {
+        res.status(400).json({ error: 'approverId is required and must be a string' });
+        return;
+      }
+      if (outcome !== 'approved' && outcome !== 'denied') {
+        res.status(400).json({ error: 'outcome must be "approved" or "denied"' });
+        return;
+      }
       const updated = this.deps.approvalStore.resolve(req.params.id, approverId, outcome);
       if (!updated) { res.status(404).json({ error: 'Not found or already resolved' }); return; }
       this.emitEvent({ type: 'approval.resolved', payload: { request: updated }, emittedAt: new Date().toISOString() });
       res.json(updated);
     });
 
-    // ----- Artifacts (stub) -----
+    // ----- Artifacts -----
     r.get('/artifacts', (_req, res) => {
-      res.json({ artifacts: [] });
+      const artifacts = this.deps.artifactStore ? this.deps.artifactStore.listAll() : [];
+      res.json({ artifacts });
+    });
+
+    r.get('/artifacts/:id', (req, res) => {
+      if (!this.deps.artifactStore) { res.status(404).json({ error: 'Not found' }); return; }
+      const artifact = this.deps.artifactStore.getById(req.params.id);
+      if (!artifact) { res.status(404).json({ error: 'Not found' }); return; }
+      res.json(artifact);
     });
 
     // ----- Audit -----
@@ -353,6 +476,77 @@ export class Gateway {
     r.delete('/memory/:id', (req, res) => {
       this.deps.memoryStore.deleteById(req.params.id);
       res.status(204).send();
+    });
+
+    // ----- Policy Editor -----
+    r.get('/policy/rules', (_req, res) => {
+      if (this.deps.policyRuleStore) {
+        res.json({ rules: this.deps.policyRuleStore.listRules() });
+      } else {
+        res.json({ rules: this.deps.policyEngine.getRules() });
+      }
+    });
+
+    r.post('/policy/rules', (req, res) => {
+      const body = req.body as Partial<PolicyRule> & { order?: number };
+      if (!body.id || typeof body.id !== 'string') {
+        res.status(400).json({ error: 'rule id is required and must be a string' });
+        return;
+      }
+      if (!body.description || typeof body.description !== 'string') {
+        res.status(400).json({ error: 'rule description is required' });
+        return;
+      }
+      const validEffects = ['deny', 'allow', 'allow_with_approval', 'sandbox_only', 'host_elevated_only', 'readonly_visibility'];
+      if (!body.effect || !validEffects.includes(body.effect)) {
+        res.status(400).json({ error: `effect must be one of: ${validEffects.join(', ')}` });
+        return;
+      }
+
+      const rule: PolicyRule = {
+        id: body.id,
+        description: body.description,
+        match: body.match ?? {},
+        effect: body.effect,
+        allowedRuntimeTarget: body.allowedRuntimeTarget,
+        auditRequired: body.auditRequired !== false,
+      };
+
+      if (this.deps.policyRuleStore) {
+        this.deps.policyRuleStore.upsertRule(rule, body.order ?? 100);
+        // Reload all rules into the policy engine
+        const updatedRules = this.deps.policyRuleStore.listRules();
+        this.deps.policyEngine.setRules(updatedRules);
+      } else {
+        // In-memory only: merge into existing rules
+        const existing = this.deps.policyEngine.getRules();
+        const idx = existing.findIndex((r) => r.id === rule.id);
+        if (idx >= 0) existing[idx] = rule; else existing.push(rule);
+        this.deps.policyEngine.setRules(existing);
+      }
+      res.status(201).json(rule);
+    });
+
+    r.delete('/policy/rules/:id', (req, res) => {
+      if (this.deps.policyRuleStore) {
+        const deleted = this.deps.policyRuleStore.deleteRule(req.params.id);
+        if (!deleted) { res.status(404).json({ error: 'Rule not found' }); return; }
+        const updatedRules = this.deps.policyRuleStore.listRules();
+        this.deps.policyEngine.setRules(updatedRules);
+      } else {
+        const existing = this.deps.policyEngine.getRules();
+        const filtered = existing.filter((r) => r.id !== req.params.id);
+        if (filtered.length === existing.length) {
+          res.status(404).json({ error: 'Rule not found' }); return;
+        }
+        this.deps.policyEngine.setRules(filtered);
+      }
+      res.status(204).send();
+    });
+
+    r.put('/policy/rules/reset', (_req, res) => {
+      this.deps.policyEngine.setRules([...DEFAULT_POLICY_RULES]);
+      res.json({ rules: this.deps.policyEngine.getRules() });
     });
 
     // ----- Plugins -----

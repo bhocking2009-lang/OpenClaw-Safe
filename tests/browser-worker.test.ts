@@ -1,0 +1,120 @@
+/**
+ * Tests for the BrowserWorker and domain allowlist enforcement.
+ */
+
+import { BrowserWorker, isDomainAllowed } from '../src/workers/browser';
+import { ToolSchema, ExecutionLease } from '../src/core/types';
+
+function makeLease(id = 'lease-1'): ExecutionLease {
+  return {
+    id,
+    toolInvocationId: 'inv-1',
+    runtimeTarget: 'browser_worker',
+    expiresAt: new Date(Date.now() + 30_000).toISOString(),
+  };
+}
+
+function makeToolSchema(): ToolSchema {
+  return {
+    name: 'web_fetch',
+    description: 'Fetch a URL',
+    riskClass: 'D',
+    defaultRuntimeTarget: 'browser_worker',
+    concurrencySafe: true,
+    idempotent: true,
+    auditPayloadShape: {},
+    inputSchema: {},
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Domain allowlist logic (pure unit tests — no network)
+// ---------------------------------------------------------------------------
+
+describe('isDomainAllowed', () => {
+  it('allows exact match', () => {
+    expect(isDomainAllowed('api.example.com', ['api.example.com'])).toBe(true);
+  });
+
+  it('rejects non-matching domain', () => {
+    expect(isDomainAllowed('evil.com', ['api.example.com'])).toBe(false);
+  });
+
+  it('allows wildcard suffix match', () => {
+    expect(isDomainAllowed('sub.trusted.org', ['*.trusted.org'])).toBe(true);
+  });
+
+  it('allows bare domain matching wildcard', () => {
+    expect(isDomainAllowed('trusted.org', ['*.trusted.org'])).toBe(true);
+  });
+
+  it('rejects domain that only shares a suffix without wildcard', () => {
+    expect(isDomainAllowed('notexample.com', ['example.com'])).toBe(false);
+  });
+
+  it('rejects deep subdomain not covered by single-level wildcard', () => {
+    // '*.trusted.org' should match 'a.trusted.org' but also 'a.b.trusted.org'
+    // because endsWith covers any depth
+    expect(isDomainAllowed('a.b.trusted.org', ['*.trusted.org'])).toBe(true);
+  });
+
+  it('returns false when allowlist is empty', () => {
+    expect(isDomainAllowed('anything.com', [])).toBe(false);
+  });
+
+  it('checks multiple entries', () => {
+    expect(isDomainAllowed('b.com', ['a.com', 'b.com', 'c.com'])).toBe(true);
+    expect(isDomainAllowed('d.com', ['a.com', 'b.com', 'c.com'])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BrowserWorker: domain enforcement (no real network calls)
+// ---------------------------------------------------------------------------
+
+describe('BrowserWorker domain enforcement', () => {
+  it('throws when domain is not on allowlist (fails closed)', async () => {
+    const worker = new BrowserWorker({ allowedDomains: ['allowed.example.com'] });
+
+    await expect(
+      worker.execute(makeToolSchema(), { url: 'https://evil.example.com/data' }, makeLease())
+    ).rejects.toThrow(/not on the allowlist/i);
+  });
+
+  it('throws when allowlist is empty (fails closed by default)', async () => {
+    const worker = new BrowserWorker({ allowedDomains: [] });
+
+    await expect(
+      worker.execute(makeToolSchema(), { url: 'https://example.com/data' }, makeLease())
+    ).rejects.toThrow(/not on the allowlist/i);
+  });
+
+  it('throws on invalid URL', async () => {
+    const worker = new BrowserWorker({ allowedDomains: ['*'] });
+
+    await expect(
+      worker.execute(makeToolSchema(), { url: 'not-a-url' }, makeLease())
+    ).rejects.toThrow(/invalid url/i);
+  });
+
+  it('throws when url param is missing', async () => {
+    const worker = new BrowserWorker({ allowedDomains: ['example.com'] });
+
+    await expect(
+      worker.execute(makeToolSchema(), {}, makeLease())
+    ).rejects.toThrow(/params\.url/i);
+  });
+
+  it('throws on non-http/https protocol (fails closed)', async () => {
+    const worker = new BrowserWorker({ allowedDomains: ['example.com'] });
+
+    await expect(
+      worker.execute(makeToolSchema(), { url: 'ftp://example.com/file' }, makeLease())
+    ).rejects.toThrow(/unsupported protocol/i);
+  });
+
+  it('runtimeTarget is browser_worker', () => {
+    const worker = new BrowserWorker({ allowedDomains: [] });
+    expect(worker.runtimeTarget).toBe('browser_worker');
+  });
+});

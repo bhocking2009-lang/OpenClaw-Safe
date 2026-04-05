@@ -181,6 +181,18 @@ export class PolicyEngine {
    * Evaluate the policy for the given context and return a decision.
    * Rules are evaluated in order; the first matching rule wins.
    */
+  /**
+   * Replace the active ruleset at runtime (used by the policy editor).
+   * Rules are evaluated in the new order immediately; no restart required.
+   */
+  setRules(rules: PolicyRule[]): void {
+    this.rules = rules;
+  }
+
+  getRules(): PolicyRule[] {
+    return [...this.rules];
+  }
+
   evaluate(ctx: PolicyContext): PolicyDecision {
     for (const rule of this.rules) {
       if (this.matchesRule(rule, ctx)) {
