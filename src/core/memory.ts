@@ -122,7 +122,12 @@ export class MemoryStore {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = query.limit ? `LIMIT ${query.limit}` : '';
+    // Validate limit to a safe positive integer before embedding in SQL.
+    const safeLimit =
+      query.limit !== undefined
+        ? Math.max(1, Math.min(Math.trunc(query.limit), Number.MAX_SAFE_INTEGER))
+        : undefined;
+    const limit = safeLimit !== undefined ? `LIMIT ${safeLimit}` : '';
     const sql = `SELECT * FROM memory_items ${where} ORDER BY confidence DESC, created_at DESC ${limit}`;
     const rows = this.db.prepare(sql).all(...values) as RawMemory[];
     return rows.map(deserializeMemory);

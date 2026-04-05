@@ -74,7 +74,7 @@ export function createCLI(): Command {
 
       await gateway.start();
       console.log(`OpenClaw Secure gateway started on http://${opts.host}:${opts.port}`);
-      console.log('Event stream: ws://${opts.host}:${opts.port}');
+      console.log(`Event stream: ws://${opts.host}:${opts.port}`);
       console.log('Press Ctrl+C to stop.');
 
       process.on('SIGINT', async () => {
