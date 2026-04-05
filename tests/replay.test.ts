@@ -2,7 +2,7 @@
  * Tests for the replay pack builder.
  */
 
-import { buildReplayPack } from '../src/core/replay';
+import { buildReplayPack, formatExecutionTrace, ReplayPack } from '../src/core/replay';
 import { AuditLog } from '../src/core/audit';
 import { ArtifactStore } from '../src/core/artifacts';
 
@@ -147,4 +147,107 @@ describe('buildReplayPack', () => {
     const roundTripped = JSON.parse(JSON.stringify(pack));
     expect(roundTripped.manifest.sessionId).toBe('ses-serial');
   });
+
+  // --- Enhanced manifest stats ---
+
+  it('manifest includes denialCount for denied tool events', () => {
+    auditLog.write({ sessionId: 'ses-stats', principalId: 'p', eventType: 'tool.denied', startedAt: new Date().toISOString() });
+    auditLog.write({ sessionId: 'ses-stats', principalId: 'p', eventType: 'policy.denied', startedAt: new Date().toISOString() });
+    auditLog.write({ sessionId: 'ses-stats', principalId: 'p', eventType: 'tool.finished', toolName: 'file_read', startedAt: new Date().toISOString() });
+    const pack = buildReplayPack('ses-stats', auditLog);
+    expect(pack.manifest.denialCount).toBe(2);
+    expect(pack.manifest.executionCount).toBe(1);
+  });
+
+  it('manifest includes approvalCount for approval events', () => {
+    auditLog.write({ sessionId: 'ses-appr', principalId: 'p', eventType: 'approval.requested', startedAt: new Date().toISOString() });
+    auditLog.write({ sessionId: 'ses-appr', principalId: 'p', eventType: 'approval.resolved', startedAt: new Date().toISOString() });
+    const pack = buildReplayPack('ses-appr', auditLog);
+    expect(pack.manifest.approvalCount).toBe(2);
+  });
+
+  it('manifest durationMs is null for sessions with fewer than 2 records', () => {
+    const pack = buildReplayPack('ses-empty', auditLog);
+    expect(pack.manifest.durationMs).toBeNull();
+  });
+
+  it('manifest durationMs is non-negative for multi-record sessions', () => {
+    const t1 = new Date(Date.now()).toISOString();
+    const t2 = new Date(Date.now() + 1000).toISOString();
+    auditLog.write({ sessionId: 'ses-dur', principalId: 'p', eventType: 'tool.started', startedAt: t1 });
+    auditLog.write({ sessionId: 'ses-dur', principalId: 'p', eventType: 'tool.finished', startedAt: t2 });
+    const pack = buildReplayPack('ses-dur', auditLog);
+    expect(pack.manifest.durationMs).not.toBeNull();
+    expect(pack.manifest.durationMs!).toBeGreaterThanOrEqual(0);
+  });
 });
+
+// ---------------------------------------------------------------------------
+// formatExecutionTrace
+// ---------------------------------------------------------------------------
+
+describe('formatExecutionTrace', () => {
+  it('returns a non-empty string for an empty session', () => {
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    const pack = buildReplayPack('ses-fmt', auditLog);
+    const trace = formatExecutionTrace(pack);
+    expect(typeof trace).toBe('string');
+    expect(trace.length).toBeGreaterThan(0);
+    auditLog.close();
+  });
+
+  it('contains session ID in the header', () => {
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    const pack = buildReplayPack('ses-header-check', auditLog);
+    const trace = formatExecutionTrace(pack);
+    expect(trace).toContain('ses-header-check');
+    auditLog.close();
+  });
+
+  it('contains one line per audit record', () => {
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    auditLog.write({ sessionId: 'ses-lines', principalId: 'p', eventType: 'tool.started', toolName: 'file_read', startedAt: new Date().toISOString() });
+    auditLog.write({ sessionId: 'ses-lines', principalId: 'p', eventType: 'tool.finished', toolName: 'file_read', startedAt: new Date().toISOString() });
+    const pack = buildReplayPack('ses-lines', auditLog);
+    const trace = formatExecutionTrace(pack);
+    // Each event type should appear in the trace
+    expect(trace).toContain('tool.started');
+    expect(trace).toContain('tool.finished');
+    auditLog.close();
+  });
+
+  it('includes execution and denial stats in header', () => {
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    auditLog.write({ sessionId: 'ses-hdr', principalId: 'p', eventType: 'tool.finished', toolName: 'f', startedAt: new Date().toISOString() });
+    auditLog.write({ sessionId: 'ses-hdr', principalId: 'p', eventType: 'tool.denied', startedAt: new Date().toISOString() });
+    const pack = buildReplayPack('ses-hdr', auditLog);
+    const trace = formatExecutionTrace(pack);
+    expect(trace).toMatch(/Executions:\s*1/);
+    expect(trace).toMatch(/Denials:\s*1/);
+    auditLog.close();
+  });
+
+  it('is JSON-free (returns plain text, not JSON)', () => {
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    const pack = buildReplayPack('ses-notjson', auditLog);
+    const trace = formatExecutionTrace(pack);
+    // Should not be parseable as top-level JSON object
+    expect(() => JSON.parse(trace)).toThrow();
+    auditLog.close();
+  });
+
+  it('all valid event types produce a recognisable icon or marker', () => {
+    const eventTypes = ['tool.started', 'tool.finished', 'tool.error', 'tool.denied', 'policy.denied', 'approval.requested', 'approval.resolved'];
+    const auditLog = new AuditLog({ dbPath: ':memory:' });
+    for (const eventType of eventTypes) {
+      auditLog.write({ sessionId: 'ses-icons', principalId: 'p', eventType, startedAt: new Date().toISOString() });
+    }
+    const pack = buildReplayPack('ses-icons', auditLog);
+    const trace = formatExecutionTrace(pack);
+    for (const eventType of eventTypes) {
+      expect(trace).toContain(eventType);
+    }
+    auditLog.close();
+  });
+});
+

@@ -100,6 +100,19 @@ export interface Task {
   /** Remaining retry attempts */
   retryCount: number;
   escalationState?: string;
+  /**
+   * How many delegation hops from the root task.
+   * 0 = root task created directly in a session.
+   * Increments by 1 for each POST /tasks/:id/delegate call.
+   * Capped at MAX_DELEGATION_DEPTH.
+   */
+  delegationDepth: number;
+  /**
+   * Optional token/budget cap for this task.
+   * When set, the session budget consumed by executions within this task
+   * cannot exceed this value (enforced at delegation time).
+   */
+  budgetCap?: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -41,8 +41,11 @@ import { SessionStore } from './session';
 import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
 import { ArtifactStore } from './artifacts';
-import { PolicyRuleStore } from './policy-store';
-import { buildReplayPack } from './replay';
+import { PolicyRuleStore, validatePolicyRule } from './policy-store';
+import { buildReplayPack, formatExecutionTrace } from './replay';
+
+/** Maximum allowed delegation depth for child tasks. */
+export const MAX_DELEGATION_DEPTH = 5;
 
 export interface GatewayConfig {
   /** Bind host. Defaults to 127.0.0.1 (loopback only). */
@@ -269,6 +272,10 @@ export class Gateway {
       const session = this.deps.sessionStore.getSession(req.params.id);
       if (!session) { res.status(404).json({ error: 'Not found' }); return; }
       const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      if ((req.query as Record<string, string | undefined>)['format'] === 'text') {
+        res.type('text/plain').send(formatExecutionTrace(pack));
+        return;
+      }
       res.json(pack);
     });
 
@@ -322,6 +329,8 @@ export class Gateway {
      * Delegate a child task from a parent task.
      * The child's capabilitySet is strictly the intersection of the parent's
      * capabilitySet and the requested capabilities — it can never be broader.
+     * Delegation depth is capped at MAX_DELEGATION_DEPTH.
+     * An optional budgetCap limits the token budget consumed by this child.
      */
     r.post('/tasks/:id/delegate', (req, res) => {
       const parent = this.deps.sessionStore.getTask(req.params.id);
@@ -332,6 +341,7 @@ export class Gateway {
         requestedCapabilities?: unknown;
         sandboxClass?: unknown;
         deadline?: unknown;
+        budgetCap?: unknown;
       };
 
       if (!body.title || typeof body.title !== 'string') {
@@ -340,6 +350,15 @@ export class Gateway {
       }
       if (!Array.isArray(body.requestedCapabilities) || !body.requestedCapabilities.every((c) => typeof c === 'string')) {
         res.status(400).json({ error: 'requestedCapabilities must be an array of strings' });
+        return;
+      }
+
+      // Enforce delegation depth cap
+      const childDepth = (parent.delegationDepth ?? 0) + 1;
+      if (childDepth > MAX_DELEGATION_DEPTH) {
+        res.status(400).json({
+          error: `Maximum delegation depth (${MAX_DELEGATION_DEPTH}) exceeded. Parent is already at depth ${parent.delegationDepth ?? 0}.`,
+        });
         return;
       }
 
@@ -353,6 +372,16 @@ export class Gateway {
         return;
       }
 
+      // Validate optional budgetCap
+      let budgetCap: number | undefined;
+      if (body.budgetCap !== undefined) {
+        if (typeof body.budgetCap !== 'number' || body.budgetCap <= 0 || !Number.isFinite(body.budgetCap)) {
+          res.status(400).json({ error: 'budgetCap must be a positive finite number' });
+          return;
+        }
+        budgetCap = body.budgetCap;
+      }
+
       const childTask = this.deps.sessionStore.createTask({
         sessionId: parent.sessionId,
         title: body.title,
@@ -361,6 +390,8 @@ export class Gateway {
         sandboxClass: typeof body.sandboxClass === 'string' ? body.sandboxClass : parent.sandboxClass,
         parentTaskId: parent.id,
         deadline: typeof body.deadline === 'string' ? body.deadline : undefined,
+        delegationDepth: childDepth,
+        budgetCap,
       });
 
       this.emitEvent({ type: 'task.updated', payload: { task: childTask }, emittedAt: new Date().toISOString() });
@@ -489,36 +520,27 @@ export class Gateway {
 
     r.post('/policy/rules', (req, res) => {
       const body = req.body as Partial<PolicyRule> & { order?: number };
-      if (!body.id || typeof body.id !== 'string') {
-        res.status(400).json({ error: 'rule id is required and must be a string' });
-        return;
-      }
-      if (!body.description || typeof body.description !== 'string') {
-        res.status(400).json({ error: 'rule description is required' });
-        return;
-      }
-      const validEffects = ['deny', 'allow', 'allow_with_approval', 'sandbox_only', 'host_elevated_only', 'readonly_visibility'];
-      if (!body.effect || !validEffects.includes(body.effect)) {
-        res.status(400).json({ error: `effect must be one of: ${validEffects.join(', ')}` });
+
+      const errors = validatePolicyRule(body);
+      if (errors.length > 0) {
+        res.status(400).json({ errors });
         return;
       }
 
       const rule: PolicyRule = {
-        id: body.id,
-        description: body.description,
+        id: body.id!,
+        description: body.description!,
         match: body.match ?? {},
-        effect: body.effect,
+        effect: body.effect!,
         allowedRuntimeTarget: body.allowedRuntimeTarget,
         auditRequired: body.auditRequired !== false,
       };
 
       if (this.deps.policyRuleStore) {
         this.deps.policyRuleStore.upsertRule(rule, body.order ?? 100);
-        // Reload all rules into the policy engine
         const updatedRules = this.deps.policyRuleStore.listRules();
         this.deps.policyEngine.setRules(updatedRules);
       } else {
-        // In-memory only: merge into existing rules
         const existing = this.deps.policyEngine.getRules();
         const idx = existing.findIndex((r) => r.id === rule.id);
         if (idx >= 0) existing[idx] = rule; else existing.push(rule);
@@ -547,6 +569,76 @@ export class Gateway {
     r.put('/policy/rules/reset', (_req, res) => {
       this.deps.policyEngine.setRules([...DEFAULT_POLICY_RULES]);
       res.json({ rules: this.deps.policyEngine.getRules() });
+    });
+
+    r.get('/policy/rules/export', (_req, res) => {
+      if (this.deps.policyRuleStore) {
+        res.json(this.deps.policyRuleStore.exportRules());
+      } else {
+        // In-memory fallback: wrap current engine rules in export envelope
+        res.json({
+          version: '1',
+          exportedAt: new Date().toISOString(),
+          rules: this.deps.policyEngine.getRules().map((rule, idx) => ({ ...rule, order: idx * 10 })),
+        });
+      }
+    });
+
+    r.post('/policy/rules/import', (req, res) => {
+      const body = req.body as { version?: unknown; rules?: unknown; merge?: unknown };
+
+      if (body.version !== '1') {
+        res.status(400).json({ error: 'version must be "1"' });
+        return;
+      }
+      if (!Array.isArray(body.rules)) {
+        res.status(400).json({ error: 'rules must be an array' });
+        return;
+      }
+
+      const merge = body.merge === true;
+
+      // Validate each rule before committing anything
+      const allErrors: Array<{ index: number; errors: ReturnType<typeof validatePolicyRule> }> = [];
+      for (let i = 0; i < body.rules.length; i++) {
+        const errs = validatePolicyRule(body.rules[i] as Partial<PolicyRule>);
+        if (errs.length > 0) allErrors.push({ index: i, errors: errs });
+      }
+      if (allErrors.length > 0) {
+        res.status(400).json({ error: 'One or more rules failed validation', details: allErrors });
+        return;
+      }
+
+      const ruleSet = body as { version: '1'; rules: Array<PolicyRule & { order?: number }> };
+      const exportedRuleSet = {
+        version: '1' as const,
+        exportedAt: new Date().toISOString(),
+        rules: ruleSet.rules.map((r, idx) => ({ ...r, order: r.order ?? idx * 10 })),
+      };
+
+      if (this.deps.policyRuleStore) {
+        this.deps.policyRuleStore.importRules(exportedRuleSet, merge);
+        const updatedRules = this.deps.policyRuleStore.listRules();
+        this.deps.policyEngine.setRules(updatedRules);
+      } else {
+        const newRules = exportedRuleSet.rules.map((r) => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { order: _order, ...rule } = r;
+          return rule as PolicyRule;
+        });
+        if (merge) {
+          const existing = this.deps.policyEngine.getRules();
+          for (const rule of newRules) {
+            const idx = existing.findIndex((e) => e.id === rule.id);
+            if (idx >= 0) existing[idx] = rule; else existing.push(rule);
+          }
+          this.deps.policyEngine.setRules(existing);
+        } else {
+          this.deps.policyEngine.setRules(newRules);
+        }
+      }
+
+      res.json({ imported: exportedRuleSet.rules.length, merge });
     });
 
     // ----- Plugins -----

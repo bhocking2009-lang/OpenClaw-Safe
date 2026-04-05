@@ -50,6 +50,8 @@ export class SessionStore {
         deadline TEXT,
         retry_count INTEGER NOT NULL DEFAULT 3,
         escalation_state TEXT,
+        delegation_depth INTEGER NOT NULL DEFAULT 0,
+        budget_cap INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(session_id) REFERENCES sessions(id)
@@ -159,6 +161,8 @@ export class SessionStore {
     parentTaskId?: string;
     dependencyIds?: string[];
     deadline?: string;
+    delegationDepth?: number;
+    budgetCap?: number;
   }): Task {
     const now = new Date().toISOString();
     const task: Task = {
@@ -173,6 +177,8 @@ export class SessionStore {
       capabilitySet: params.capabilitySet ?? [],
       deadline: params.deadline,
       retryCount: 3,
+      delegationDepth: params.delegationDepth ?? 0,
+      budgetCap: params.budgetCap,
       createdAt: now,
       updatedAt: now,
     };
@@ -181,8 +187,8 @@ export class SessionStore {
         `INSERT INTO tasks
           (id, session_id, title, state, owner_id, executor_id, parent_task_id,
            dependency_ids, sandbox_class, capability_set, deadline, retry_count,
-           escalation_state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           escalation_state, delegation_depth, budget_cap, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.id,
@@ -198,6 +204,8 @@ export class SessionStore {
         task.deadline ?? null,
         task.retryCount,
         task.escalationState ?? null,
+        task.delegationDepth,
+        task.budgetCap ?? null,
         task.createdAt,
         task.updatedAt
       );
@@ -289,6 +297,8 @@ interface RawTask {
   deadline: string | null;
   retry_count: number;
   escalation_state: string | null;
+  delegation_depth: number;
+  budget_cap: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -322,6 +332,8 @@ function deserializeTask(row: RawTask): Task {
     deadline: row.deadline ?? undefined,
     retryCount: row.retry_count,
     escalationState: row.escalation_state ?? undefined,
+    delegationDepth: row.delegation_depth ?? 0,
+    budgetCap: row.budget_cap ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

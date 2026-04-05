@@ -48,6 +48,7 @@ function makeTask(capabilitySet: string[] = []): Task {
     sandboxClass: 'workspace-write',
     capabilitySet,
     retryCount: 3,
+    delegationDepth: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

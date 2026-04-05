@@ -43,8 +43,31 @@ const DEFAULT_CONFIG: BrowserWorkerConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// Domain allowlist helpers
+// Sensitive header names to scrub from audit networkSummary
 // ---------------------------------------------------------------------------
+
+const SCRUBBED_HEADER_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-auth-token',
+  'proxy-authorization',
+]);
+
+/**
+ * Returns a copy of headers safe to include in audit records.
+ * Values for sensitive headers are replaced with '<redacted>'.
+ */
+export function scrubHeadersForAudit(
+  headers: Record<string, string>
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    result[key] = SCRUBBED_HEADER_NAMES.has(key.toLowerCase()) ? '<redacted>' : value;
+  }
+  return result;
+}
 
 /** Returns true if `hostname` is permitted by the allowlist entry. */
 function matchesDomainEntry(hostname: string, entry: string): boolean {
@@ -131,6 +154,11 @@ export class BrowserWorker implements WorkerExecutor {
         headers,
         body: body ?? undefined,
         signal: controller.signal,
+        // Never follow redirects — a redirect to a different domain would
+        // bypass the domain allowlist. Fail closed instead.
+        redirect: 'error',
+        // Do not leak the request origin to the destination server.
+        referrerPolicy: 'no-referrer',
       });
 
       responseStatus = response.status;
@@ -138,7 +166,8 @@ export class BrowserWorker implements WorkerExecutor {
       // Cap response body
       const text = await response.text();
       responseBody = text.slice(0, this.config.maxBodyBytes);
-      networkSummary = `${method} ${rawUrl} → ${responseStatus} (${responseBody.length} bytes)`;
+      const scrubbedHeaders = scrubHeadersForAudit(headers);
+      networkSummary = `${method} ${rawUrl} → ${responseStatus} (${responseBody.length} bytes) headers=${JSON.stringify(scrubbedHeaders)}`;
     } finally {
       clearTimeout(timer);
     }

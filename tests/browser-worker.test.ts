@@ -2,7 +2,7 @@
  * Tests for the BrowserWorker and domain allowlist enforcement.
  */
 
-import { BrowserWorker, isDomainAllowed } from '../src/workers/browser';
+import { BrowserWorker, isDomainAllowed, scrubHeadersForAudit } from '../src/workers/browser';
 import { ToolSchema, ExecutionLease } from '../src/core/types';
 
 function makeLease(id = 'lease-1'): ExecutionLease {
@@ -69,6 +69,47 @@ describe('isDomainAllowed', () => {
 });
 
 // ---------------------------------------------------------------------------
+// scrubHeadersForAudit
+// ---------------------------------------------------------------------------
+
+describe('scrubHeadersForAudit', () => {
+  it('preserves non-sensitive headers', () => {
+    const result = scrubHeadersForAudit({ 'Content-Type': 'application/json', Accept: 'text/html' });
+    expect(result['Content-Type']).toBe('application/json');
+    expect(result['Accept']).toBe('text/html');
+  });
+
+  it('redacts Authorization header', () => {
+    const result = scrubHeadersForAudit({ authorization: 'Bearer secret-token' });
+    expect(result['authorization']).toBe('<redacted>');
+  });
+
+  it('redacts Cookie header', () => {
+    const result = scrubHeadersForAudit({ cookie: 'session=abc123' });
+    expect(result['cookie']).toBe('<redacted>');
+  });
+
+  it('redacts X-Api-Key header', () => {
+    const result = scrubHeadersForAudit({ 'x-api-key': 'my-secret-key' });
+    expect(result['x-api-key']).toBe('<redacted>');
+  });
+
+  it('redacts x-auth-token header', () => {
+    const result = scrubHeadersForAudit({ 'x-auth-token': 'tok' });
+    expect(result['x-auth-token']).toBe('<redacted>');
+  });
+
+  it('handles mixed-case header names case-insensitively', () => {
+    const result = scrubHeadersForAudit({ Authorization: 'Bearer abc' });
+    expect(result['Authorization']).toBe('<redacted>');
+  });
+
+  it('returns empty object for empty input', () => {
+    expect(scrubHeadersForAudit({})).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
 // BrowserWorker: domain enforcement (no real network calls)
 // ---------------------------------------------------------------------------
 
@@ -118,3 +159,65 @@ describe('BrowserWorker domain enforcement', () => {
     expect(worker.runtimeTarget).toBe('browser_worker');
   });
 });
+
+// ---------------------------------------------------------------------------
+// BrowserWorker: redirect control (unit test — mock fetch)
+// ---------------------------------------------------------------------------
+
+describe('BrowserWorker redirect control', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('passes redirect: error to fetch, preventing cross-domain redirect following', async () => {
+    let capturedOptions: RequestInit | undefined;
+    globalThis.fetch = jest.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      capturedOptions = options;
+      return {
+        status: 200,
+        text: async () => 'hello',
+      };
+    }) as typeof fetch;
+
+    const worker = new BrowserWorker({ allowedDomains: ['example.com'] });
+    await worker.execute(makeToolSchema(), { url: 'https://example.com/test' }, makeLease());
+
+    expect(capturedOptions?.redirect).toBe('error');
+  });
+
+  it('passes referrerPolicy: no-referrer to fetch', async () => {
+    let capturedOptions: RequestInit | undefined;
+    globalThis.fetch = jest.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      capturedOptions = options;
+      return {
+        status: 200,
+        text: async () => '',
+      };
+    }) as typeof fetch;
+
+    const worker = new BrowserWorker({ allowedDomains: ['example.com'] });
+    await worker.execute(makeToolSchema(), { url: 'https://example.com/' }, makeLease());
+
+    expect(capturedOptions?.referrerPolicy).toBe('no-referrer');
+  });
+
+  it('networkSummary redacts Authorization header value', async () => {
+    globalThis.fetch = jest.fn().mockImplementation(async () => ({
+      status: 200,
+      text: async () => 'ok',
+    })) as typeof fetch;
+
+    const worker = new BrowserWorker({ allowedDomains: ['example.com'] });
+    const receipt = await worker.execute(
+      makeToolSchema(),
+      { url: 'https://example.com/', headers: { authorization: 'Bearer super-secret' } },
+      makeLease()
+    );
+
+    expect(receipt.networkSummary).toContain('<redacted>');
+    expect(receipt.networkSummary).not.toContain('super-secret');
+  });
+});
+
