@@ -10,14 +10,33 @@
  * Tool params shape expected by this worker:
  *   {
  *     url:     string               (required)
+ *     label?:  string               (optional artifact label)
  *     method?: 'GET'|'POST'|'PUT'|'DELETE'|'PATCH'  (default: 'GET')
  *     headers?: Record<string,string>
  *     body?:   string
  *   }
  */
 
+import { createHash } from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import { WorkerExecutor } from '../core/broker';
 import { ToolSchema, ExecutionLease, RuntimeReceipt, RuntimeTarget } from '../core/types';
+
+// ---------------------------------------------------------------------------
+// Typed worker error — carries an auditEventType so the broker can emit the
+// correct audit event instead of the generic 'tool.error'.
+// ---------------------------------------------------------------------------
+
+export class BrowserWorkerError extends Error {
+  constructor(
+    message: string,
+    /** The audit event type to emit for this denial. */
+    public readonly auditEventType: string
+  ) {
+    super(message);
+    this.name = 'BrowserWorkerError';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -116,14 +135,18 @@ export class BrowserWorker implements WorkerExecutor {
     }
 
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error(`BrowserWorker: unsupported protocol "${parsed.protocol}". Only http/https allowed.`);
+      throw new BrowserWorkerError(
+        `BrowserWorker: unsupported protocol "${parsed.protocol}". Only http/https allowed.`,
+        'browser.protocol.denied'
+      );
     }
 
     // --- Domain allowlist enforcement (fails closed) ---
     if (!isDomainAllowed(parsed.hostname, this.config.allowedDomains)) {
-      throw new Error(
+      throw new BrowserWorkerError(
         `BrowserWorker: domain "${parsed.hostname}" is not on the allowlist for tool "${tool.name}". ` +
-        `Allowed: [${this.config.allowedDomains.join(', ') || 'none'}]`
+        `Allowed: [${this.config.allowedDomains.join(', ') || 'none'}]`,
+        'browser.allowlist.denied'
       );
     }
 
@@ -140,6 +163,8 @@ export class BrowserWorker implements WorkerExecutor {
 
     const body = typeof params['body'] === 'string' ? params['body'] : undefined;
 
+    const label = typeof params['label'] === 'string' ? params['label'] : undefined;
+
     // --- Execute with timeout ---
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -149,17 +174,29 @@ export class BrowserWorker implements WorkerExecutor {
     let networkSummary = '';
 
     try {
-      const response = await fetch(rawUrl, {
-        method,
-        headers,
-        body: body ?? undefined,
-        signal: controller.signal,
-        // Never follow redirects — a redirect to a different domain would
-        // bypass the domain allowlist. Fail closed instead.
-        redirect: 'error',
-        // Do not leak the request origin to the destination server.
-        referrerPolicy: 'no-referrer',
-      });
+      let response: Response;
+      try {
+        response = await fetch(rawUrl, {
+          method,
+          headers,
+          body: body ?? undefined,
+          signal: controller.signal,
+          // Never follow redirects — a redirect to a different domain would
+          // bypass the domain allowlist. Fail closed instead.
+          redirect: 'error',
+          // Do not leak the request origin to the destination server.
+          referrerPolicy: 'no-referrer',
+        });
+      } catch (fetchErr) {
+        // Detect redirect errors from fetch and convert to typed denial.
+        if (fetchErr instanceof TypeError && /redirect/i.test((fetchErr as Error).message)) {
+          throw new BrowserWorkerError(
+            `BrowserWorker: redirect denied for "${rawUrl}" — cross-domain redirects are not allowed: ${(fetchErr as Error).message}`,
+            'browser.redirect.denied'
+          );
+        }
+        throw fetchErr;
+      }
 
       responseStatus = response.status;
 
@@ -173,6 +210,17 @@ export class BrowserWorker implements WorkerExecutor {
     }
 
     const finishedAt = new Date().toISOString();
+
+    // --- Produce a structured_data artifact for the fetched content ---
+    const checksum = createHash('sha256').update(responseBody).digest('hex');
+    const artifactRef = {
+      id: uuidv4(),
+      uri: `browser-doc://${lease.toolInvocationId}`,
+      checksum,
+      type: 'structured_data' as const,
+      ...(label ? { label } : {}),
+    };
+
     return {
       invocationId: lease.toolInvocationId,
       runtimeTarget: 'browser_worker',
@@ -182,7 +230,7 @@ export class BrowserWorker implements WorkerExecutor {
       stderr: '',
       fileDiffs: [],
       networkSummary,
-      artifacts: [],
+      artifacts: [artifactRef],
       startedAt,
       finishedAt,
     };

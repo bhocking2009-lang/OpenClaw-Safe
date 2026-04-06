@@ -44,9 +44,39 @@ import { ArtifactStore } from './artifacts';
 import { PolicyRuleStore, validatePolicyRule } from './policy-store';
 import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayPacks } from './replay';
 import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatIntegrityReport } from './display';
+import { BrowserWorker } from '../workers/browser';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
+
+// ---------------------------------------------------------------------------
+// Phase 7 — browser_doc_fetch tool schema
+// ---------------------------------------------------------------------------
+
+/** Tool schema for the narrow browser documentation-fetch workflow. */
+export const BROWSER_DOC_FETCH_SCHEMA: import('./types').ToolSchema = {
+  name: 'browser_doc_fetch',
+  description:
+    'Fetch and extract text from an allowlisted documentation URL. ' +
+    'Domain must be on the configured allowlist. Redirects are denied. ' +
+    'Result is stored as a structured_data artifact.',
+  riskClass: 'D',
+  defaultRuntimeTarget: 'browser_worker',
+  concurrencySafe: true,
+  idempotent: true,
+  auditPayloadShape: {
+    url: 'string',
+    label: 'string?',
+  },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'HTTPS URL to fetch (must be on domain allowlist)' },
+      label: { type: 'string', description: 'Optional label for the captured artifact' },
+    },
+    required: ['url'],
+  },
+};
 
 export interface GatewayConfig {
   /** Bind host. Defaults to 127.0.0.1 (loopback only). */
@@ -75,6 +105,12 @@ export interface GatewayDependencies {
   memoryStore: MemoryStore;
   artifactStore?: ArtifactStore;
   policyRuleStore?: PolicyRuleStore;
+  /**
+   * Optional pre-configured BrowserWorker for the browser_doc_fetch workflow.
+   * When provided, the gateway auto-registers the worker and the browser_doc_fetch
+   * tool schema, and exposes the POST /v1/browser/doc-fetch endpoint.
+   */
+  browserWorker?: BrowserWorker;
 }
 
 export class Gateway {
@@ -94,6 +130,10 @@ export class Gateway {
     this.app = express();
     this.server = createServer(this.app);
     this.wss = new WebSocketServer({ server: this.server });
+    if (deps.browserWorker) {
+      deps.broker.registerWorker(deps.browserWorker);
+      deps.broker.registerTool(BROWSER_DOC_FETCH_SCHEMA);
+    }
     this.setupMiddleware();
     this.setupRoutes();
     this.setupWebSocket();
@@ -425,6 +465,8 @@ export class Gateway {
         exportedAt: new Date().toISOString(),
         budgetRemaining: session.budget,
         budgetExhaustedCount: pack.manifest.budgetExhaustedCount,
+        browserFetchCount: pack.manifest.browserFetchCount,
+        browserDenialCount: pack.manifest.browserDenialCount,
         replayPack: pack,
         summary: formatReplaySummary(pack),
         integrityReport: integrityResult,
@@ -648,6 +690,95 @@ export class Gateway {
       const artifact = this.deps.artifactStore.getById(req.params.id);
       if (!artifact) { res.status(404).json({ error: 'Not found' }); return; }
       res.json(artifact);
+    });
+
+    // ----- Phase 7: Browser doc-fetch workflow -----
+    r.post('/browser/doc-fetch', async (req: Request, res: Response) => {
+      if (!this.deps.browserWorker) {
+        res.status(503).json({ error: 'Browser worker not configured' });
+        return;
+      }
+
+      const body = req.body as {
+        sessionId?: unknown;
+        taskId?: unknown;
+        url?: unknown;
+        label?: unknown;
+      };
+
+      if (!body.sessionId || typeof body.sessionId !== 'string') {
+        res.status(400).json({ error: 'sessionId is required' });
+        return;
+      }
+      if (!body.taskId || typeof body.taskId !== 'string') {
+        res.status(400).json({ error: 'taskId is required' });
+        return;
+      }
+      if (!body.url || typeof body.url !== 'string') {
+        res.status(400).json({ error: 'url is required' });
+        return;
+      }
+
+      const session = this.deps.sessionStore.getSession(body.sessionId);
+      if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+
+      const task = this.deps.sessionStore.getTask(body.taskId);
+      if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
+
+      const principal = this.principals.get(session.principalId);
+      if (!principal) { res.status(400).json({ error: 'Session principal not found' }); return; }
+
+      // Parse URL for the networkDomain policy context field; reject unparseable URLs early.
+      let networkDomain: string | undefined;
+      try {
+        networkDomain = new URL(body.url).hostname;
+      } catch {
+        res.status(400).json({ error: 'url is not a valid URL' });
+        return;
+      }
+
+      const params: Record<string, unknown> = { url: body.url };
+      if (body.label && typeof body.label === 'string') params['label'] = body.label;
+
+      const toolRequest = {
+        id: uuidv4(),
+        sessionId: body.sessionId,
+        taskId: body.taskId,
+        toolName: 'browser_doc_fetch',
+        params,
+        principalId: session.principalId,
+      };
+
+      const policyCtx = {
+        principal,
+        session,
+        toolName: 'browser_doc_fetch',
+        toolRiskClass: 'D' as import('./types').ToolRiskClass,
+        runtimeTarget: 'browser_worker' as import('./types').RuntimeTarget,
+        networkDomain,
+        approvalState: 'pending' as import('./types').ApprovalOutcome,
+      };
+
+      const result = await this.deps.broker.dispatch(toolRequest, policyCtx, task);
+
+      this.emitEvent({
+        type: result.denied ? 'policy.denied' : 'tool.finished',
+        payload: {
+          toolName: 'browser_doc_fetch',
+          sessionId: body.sessionId,
+          taskId: body.taskId,
+          denied: result.denied,
+        },
+        emittedAt: new Date().toISOString(),
+      });
+
+      res.json({
+        denied: result.denied,
+        requiresApproval: result.requiresApproval,
+        policyDecision: result.policyDecision,
+        receipt: result.receipt ?? null,
+        error: result.invocation.error ?? null,
+      });
     });
 
     // ----- Audit -----

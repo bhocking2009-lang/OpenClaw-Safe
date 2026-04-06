@@ -251,6 +251,10 @@ export interface ArtifactRef {
   id: string;
   uri: string;
   checksum: string;
+  /** Artifact type hint for the broker to use when persisting to the artifact store. */
+  type?: ArtifactType;
+  /** Optional human-readable label for this artifact. */
+  label?: string;
 }
 
 export interface ApprovalContext {

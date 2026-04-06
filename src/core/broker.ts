@@ -305,10 +305,12 @@ export class ToolBroker {
 
     let receipt: RuntimeReceipt | undefined;
     let error: string | undefined;
+    let workerAuditEventType: string | undefined;
     try {
       receipt = await worker.execute(schema, request.params, lease);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+      workerAuditEventType = (err as { auditEventType?: string }).auditEventType;
     }
 
     const finishedAt = new Date().toISOString();
@@ -328,10 +330,12 @@ export class ToolBroker {
       if (this.artifactStore && receipt.artifacts && receipt.artifacts.length > 0) {
         for (const ref of receipt.artifacts) {
           this.artifactStore.store({
-            type: 'file',
+            type: ref.type ?? 'file',
             uri: ref.uri,
             provenanceId: request.taskId,
             checksum: ref.checksum,
+            label: ref.label,
+            invocationId: request.id,
           });
         }
       }
@@ -346,13 +350,13 @@ export class ToolBroker {
       budgetRemaining = updated?.budget;
     }
 
-    // Emit tool.finished audit record
+    // Emit tool.finished (or browser-specific denial) audit record
     if (decision.auditRequired) {
       this.auditLog.write({
         sessionId: request.sessionId,
         taskId: request.taskId,
         principalId: request.principalId,
-        eventType: error ? 'tool.error' : 'tool.finished',
+        eventType: workerAuditEventType ?? (error ? 'tool.error' : 'tool.finished'),
         toolName: request.toolName,
         params: request.params,
         policyDecision: decision,

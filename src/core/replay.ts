@@ -32,6 +32,10 @@ export interface ReplayPackManifest {
   durationMs: number | null;
   /** Number of budget.exhausted events recorded in this session */
   budgetExhaustedCount: number;
+  /** Number of successful browser_doc_fetch tool completions */
+  browserFetchCount: number;
+  /** Number of browser-specific denial events (allowlist, protocol, redirect) */
+  browserDenialCount: number;
 }
 
 export interface ReplayPack {
@@ -106,6 +110,17 @@ export function buildReplayPack(
     (r) => r.eventType === 'budget.exhausted'
   ).length;
 
+  const browserFetchCount = auditRecords.filter(
+    (r) => r.eventType === 'tool.finished' && r.toolName === 'browser_doc_fetch'
+  ).length;
+
+  const browserDenialCount = auditRecords.filter(
+    (r) =>
+      r.eventType === 'browser.allowlist.denied' ||
+      r.eventType === 'browser.protocol.denied' ||
+      r.eventType === 'browser.redirect.denied'
+  ).length;
+
   let durationMs: number | null = null;
   if (auditRecords.length >= 2) {
     const first = Date.parse(auditRecords[0].startedAt);
@@ -126,6 +141,8 @@ export function buildReplayPack(
     approvalCount,
     durationMs,
     budgetExhaustedCount,
+    browserFetchCount,
+    browserDenialCount,
   };
 
   return { manifest, auditRecords, artifacts };
@@ -143,6 +160,9 @@ const EVENT_EMOJI: Record<string, string> = {
   'policy.denied':            '⛔',
   'budget.exhausted':         '💰',
   'delegation.depth.exceeded':'🚫',
+  'browser.allowlist.denied': '🔒',
+  'browser.protocol.denied':  '🔒',
+  'browser.redirect.denied':  '🔒',
   'approval.requested':       '⏳',
   'approval.resolved':        '✅',
   'channel.ingest':           '📨',

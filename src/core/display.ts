@@ -70,6 +70,7 @@ interface InvocationBlock {
   finishedAt?: string;
   outcome: 'success' | 'error' | 'pending';
   errorMessage?: string;
+  networkSummary?: string;
   artifacts: Artifact[];
 }
 
@@ -99,13 +100,15 @@ export function formatReplaySummary(pack: ReplayPack): string {
   lines.push(`  Records   : ${manifest.recordCount}`);
   lines.push(`  Tools     : ${manifest.toolsInvoked.join(', ') || '(none)'}`);
   lines.push(`  Principals: ${manifest.principalsInvolved.join(', ') || '(none)'}`);
-  lines.push(`  Stats     : ${manifest.executionCount} execution(s)  ·  ${manifest.denialCount} denial(s)  ·  ${manifest.approvalCount} approval event(s)  ·  ${manifest.budgetExhaustedCount} budget-exhausted event(s)`);
+  lines.push(`  Stats     : ${manifest.executionCount} execution(s)  ·  ${manifest.denialCount} denial(s)  ·  ${manifest.approvalCount} approval event(s)  ·  ${manifest.budgetExhaustedCount} budget-exhausted event(s)  ·  ${manifest.browserFetchCount} browser fetch(es)  ·  ${manifest.browserDenialCount} browser denial(s)`);
   lines.push('');
 
   // ── Section 1: Decisions ─────────────────────────────────────────────────
   const denials = auditRecords.filter(
     (r) => r.eventType === 'tool.denied' || r.eventType === 'policy.denied' ||
-           r.eventType === 'budget.exhausted' || r.eventType === 'delegation.depth.exceeded'
+           r.eventType === 'budget.exhausted' || r.eventType === 'delegation.depth.exceeded' ||
+           r.eventType === 'browser.allowlist.denied' || r.eventType === 'browser.protocol.denied' ||
+           r.eventType === 'browser.redirect.denied'
   );
 
   lines.push(section('Decisions'));
@@ -115,7 +118,11 @@ export function formatReplaySummary(pack: ReplayPack): string {
     for (const r of denials) {
       const isBudget = r.eventType === 'budget.exhausted';
       const isDelegation = r.eventType === 'delegation.depth.exceeded';
-      const icon = isBudget ? '💰' : isDelegation ? '🚫' : '⛔';
+      const isBrowserDenial =
+        r.eventType === 'browser.allowlist.denied' ||
+        r.eventType === 'browser.protocol.denied' ||
+        r.eventType === 'browser.redirect.denied';
+      const icon = isBudget ? '💰' : isDelegation ? '🚫' : isBrowserDenial ? '🔒' : '⛔';
       const reason  = r.policyDecision?.reason ?? r.error ?? 'unknown';
       const ruleId  = r.policyDecision?.matchedRuleId ? ` [rule: ${r.policyDecision.matchedRuleId}]` : '';
       const tool    = r.toolName ? ` → ${r.toolName}` : '';
@@ -182,6 +189,9 @@ export function formatReplaySummary(pack: ReplayPack): string {
       if (block.errorMessage) {
         lines.push(indent(`   error   : ${block.errorMessage}`, 4));
       }
+      if (block.networkSummary) {
+        lines.push(indent(`   network : ${block.networkSummary}`, 4));
+      }
       if (block.artifacts.length > 0) {
         lines.push(indent(`   artifacts (${block.artifacts.length}):`, 4));
         for (const art of block.artifacts) {
@@ -245,6 +255,7 @@ function buildInvocationBlocks(
       if (block) {
         block.outcome = 'success';
         block.finishedAt = r.finishedAt ?? r.startedAt;
+        if (r.networkTraceSummary) block.networkSummary = r.networkTraceSummary;
         openMap.delete(makeKey(r));
       }
     } else if (r.eventType === 'tool.error') {
@@ -253,6 +264,7 @@ function buildInvocationBlocks(
         block.outcome = 'error';
         block.finishedAt = r.finishedAt ?? r.startedAt;
         block.errorMessage = r.error;
+        if (r.networkTraceSummary) block.networkSummary = r.networkTraceSummary;
         openMap.delete(makeKey(r));
       }
     }
