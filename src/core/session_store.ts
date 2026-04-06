@@ -51,13 +51,12 @@ export class SessionStore {
   }
 
   decrementBudget(sessionId: string, amount: number): SessionRecord {
+    const existing = this.get(sessionId);
+    if (!existing) throw new Error(`Session '${sessionId}' not found.`);
     this.db
       .prepare("UPDATE sessions SET budget = budget - ? WHERE session_id = ?")
       .run(amount, sessionId);
-    const row = this.db
-      .prepare("SELECT * FROM sessions WHERE session_id = ?")
-      .get(sessionId) as SessionRow;
-    return this.deserialize(row);
+    return this.get(sessionId)!;
   }
 
   close(): void {

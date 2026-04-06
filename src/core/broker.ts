@@ -34,9 +34,11 @@ export class ToolBroker {
           });
         }
         invocation.status = InvocationStatus.DENIED;
-        const err = new Error(`Budget exhausted for session '${sessionId}'.`) as Error & { matchedRuleId?: string };
-        err.matchedRuleId = "budget-exhausted";
-        throw err;
+        class BudgetExhaustedError extends Error {
+          readonly matchedRuleId = "budget-exhausted";
+          constructor(msg: string) { super(msg); this.name = "BudgetExhaustedError"; }
+        }
+        throw new BudgetExhaustedError(`Budget exhausted for session '${sessionId}'.`);
       }
     }
 

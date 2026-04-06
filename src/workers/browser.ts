@@ -100,19 +100,21 @@ export class BrowserWorker {
       parsedUrl = new URL(url);
     } catch {
       this.deny("browser.url.denied", url, actorId, `Invalid URL: ${url}`);
+      // deny() always throws; this line is unreachable but satisfies TypeScript
+      throw new Error("unreachable");
     }
 
-    if (!allowedProtocols.includes(parsedUrl!.protocol)) {
+    if (!allowedProtocols.includes(parsedUrl.protocol)) {
       this.deny(
         "browser.protocol.denied",
         url,
         actorId,
-        `Protocol '${parsedUrl!.protocol}' is not allowed.`
+        `Protocol '${parsedUrl.protocol}' is not allowed.`
       );
     }
 
     // 2. Private IP / IP literal check (BEFORE allowlist)
-    const hostname = parsedUrl!.hostname;
+    const hostname = parsedUrl.hostname;
     if (isPrivateOrReserved(hostname)) {
       this.deny("browser.url.denied", url, actorId, `Host '${hostname}' resolves to a private/reserved address.`);
     }
@@ -131,12 +133,12 @@ export class BrowserWorker {
 
     // 4. Execute fetch with timeout
     const impl = fetchImpl ?? this.defaultFetch;
-    let response: { status: number; headers: { get(h: string): string | null }; text(): Promise<string> };
 
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("__browser_timeout__")), timeoutMs)
     );
 
+    let response: { status: number; headers: { get(h: string): string | null }; text(): Promise<string> };
     try {
       response = await Promise.race([impl(url), timeoutPromise]);
     } catch (err) {
@@ -145,11 +147,13 @@ export class BrowserWorker {
         this.deny("browser.timeout", url, actorId, `Request timed out after ${timeoutMs}ms.`);
       }
       this.deny("browser.network.error", url, actorId, `Network error: ${msg}`);
+      // deny() always throws; these lines are unreachable
+      throw new Error("unreachable");
     }
 
     // 5. Redirect check
-    if (response!.status >= 300 && response!.status < 400) {
-      this.deny("browser.redirect.denied", url, actorId, `Redirect detected (status ${response!.status}).`);
+    if (response.status >= 300 && response.status < 400) {
+      this.deny("browser.redirect.denied", url, actorId, `Redirect detected (status ${response.status}).`);
     }
 
     // 6. (Timeout already handled above)
@@ -157,12 +161,13 @@ export class BrowserWorker {
     // 7. Body size check
     let body: string;
     try {
-      body = await response!.text();
+      body = await response.text();
     } catch (err) {
       this.deny("browser.network.error", url, actorId, `Failed to read response body: ${String(err)}`);
+      throw new Error("unreachable");
     }
 
-    if (Buffer.byteLength(body!, "utf8") > maxBodyBytes) {
+    if (Buffer.byteLength(body, "utf8") > maxBodyBytes) {
       this.deny(
         "browser.body.too_large",
         url,
@@ -172,7 +177,7 @@ export class BrowserWorker {
     }
 
     // 8. Content type check
-    const contentType = response!.headers.get("content-type") ?? "";
+    const contentType = response.headers.get("content-type") ?? "";
     if (this.options.allowedContentTypes && this.options.allowedContentTypes.length > 0) {
       const baseType = contentType.split(";")[0].trim();
       if (!this.options.allowedContentTypes.some((ct) => baseType === ct || contentType.startsWith(ct))) {
@@ -187,10 +192,10 @@ export class BrowserWorker {
 
     return {
       url,
-      statusCode: response!.status,
+      statusCode: response.status,
       contentType,
-      body: body!,
-      tokensUsed: body!.length,
+      body,
+      tokensUsed: body.length,
     };
   }
 

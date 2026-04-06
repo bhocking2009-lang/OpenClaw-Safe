@@ -20,11 +20,7 @@ export class ModelLoop {
 
     for (let i = 0; i < limit; i++) {
       const step = steps[i];
-      try {
-        results.push({ stepIndex: i, input: step.input, output: step.output });
-      } catch (err) {
-        if (this.options.stopOnError) break;
-      }
+      results.push({ stepIndex: i, input: step.input, output: step.output });
     }
 
     return results;
