@@ -7,6 +7,11 @@ import { HostElevationPath } from "./host_elevation";
 import { AuditLog, AuditEventKind } from "./audit_log";
 import { SessionStore } from "./session_store";
 
+export class BudgetExhaustedError extends Error {
+  readonly matchedRuleId = "budget-exhausted";
+  constructor(msg: string) { super(msg); this.name = "BudgetExhaustedError"; }
+}
+
 export class ToolBroker {
   constructor(
     private readonly sandbox: SandboxWorker,
@@ -34,10 +39,6 @@ export class ToolBroker {
           });
         }
         invocation.status = InvocationStatus.DENIED;
-        class BudgetExhaustedError extends Error {
-          readonly matchedRuleId = "budget-exhausted";
-          constructor(msg: string) { super(msg); this.name = "BudgetExhaustedError"; }
-        }
         throw new BudgetExhaustedError(`Budget exhausted for session '${sessionId}'.`);
       }
     }

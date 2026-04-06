@@ -100,8 +100,6 @@ export class BrowserWorker {
       parsedUrl = new URL(url);
     } catch {
       this.deny("browser.url.denied", url, actorId, `Invalid URL: ${url}`);
-      // deny() always throws; this line is unreachable but satisfies TypeScript
-      throw new Error("unreachable");
     }
 
     if (!allowedProtocols.includes(parsedUrl.protocol)) {
@@ -147,8 +145,6 @@ export class BrowserWorker {
         this.deny("browser.timeout", url, actorId, `Request timed out after ${timeoutMs}ms.`);
       }
       this.deny("browser.network.error", url, actorId, `Network error: ${msg}`);
-      // deny() always throws; these lines are unreachable
-      throw new Error("unreachable");
     }
 
     // 5. Redirect check
