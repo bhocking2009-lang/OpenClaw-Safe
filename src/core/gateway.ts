@@ -42,7 +42,8 @@ import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
 import { ArtifactStore } from './artifacts';
 import { PolicyRuleStore, validatePolicyRule } from './policy-store';
-import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity } from './replay';
+import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayPacks } from './replay';
+import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatIntegrityReport } from './display';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
@@ -289,6 +290,14 @@ export class Gateway {
       if (!session) { res.status(404).json({ error: 'Not found' }); return; }
       const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
       const result = checkAuditIntegrity(pack);
+      if ((req.query as Record<string, string | undefined>)['format'] === 'text') {
+        res
+          .type('text/plain; charset=utf-8')
+          .set('X-Content-Type-Options', 'nosniff')
+          .set('Content-Disposition', 'attachment; filename="integrity-report.txt"')
+          .send(formatIntegrityReport(result));
+        return;
+      }
       res.status(result.valid ? 200 : 409).json(result);
     });
 
@@ -335,7 +344,98 @@ export class Gateway {
       };
 
       const decision = this.deps.policyEngine.explain(ctx);
+
+      if ((req.query as Record<string, string | undefined>)['format'] === 'text') {
+        res
+          .type('text/plain; charset=utf-8')
+          .set('X-Content-Type-Options', 'nosniff')
+          .set('Content-Disposition', 'attachment; filename="policy-explanation.txt"')
+          .send(formatPolicyExplanation(decision));
+        return;
+      }
+
       res.json(decision);
+    });
+
+    // ---------------------------------------------------------------------------
+    // Phase 5 — Operator views and export bundles
+    // ---------------------------------------------------------------------------
+
+    // Human-readable replay summary for a session
+    r.get('/sessions/:id/replay-summary', (req, res) => {
+      const session = this.deps.sessionStore.getSession(req.params.id);
+      if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+      const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      res
+        .type('text/plain; charset=utf-8')
+        .set('X-Content-Type-Options', 'nosniff')
+        .set('Content-Disposition', `attachment; filename="session-summary-${req.params.id}.txt"`)
+        .send(formatReplaySummary(pack));
+    });
+
+    // Human-readable diff between two sessions
+    r.post('/sessions/diff', (req, res) => {
+      const body = req.body as { sessionA?: unknown; sessionB?: unknown; format?: unknown };
+
+      if (!body.sessionA || typeof body.sessionA !== 'string') {
+        res.status(400).json({ error: 'sessionA is required and must be a string' });
+        return;
+      }
+      if (!body.sessionB || typeof body.sessionB !== 'string') {
+        res.status(400).json({ error: 'sessionB is required and must be a string' });
+        return;
+      }
+
+      const sesA = this.deps.sessionStore.getSession(body.sessionA);
+      if (!sesA) { res.status(404).json({ error: `Session not found: ${body.sessionA}` }); return; }
+      const sesB = this.deps.sessionStore.getSession(body.sessionB);
+      if (!sesB) { res.status(404).json({ error: `Session not found: ${body.sessionB}` }); return; }
+
+      const packA = buildReplayPack(body.sessionA, this.deps.auditLog, this.deps.artifactStore);
+      const packB = buildReplayPack(body.sessionB, this.deps.auditLog, this.deps.artifactStore);
+      const diff = diffReplayPacks(packA, packB);
+
+      if (body.format === 'text') {
+        res
+          .type('text/plain; charset=utf-8')
+          .set('X-Content-Type-Options', 'nosniff')
+          .set('Content-Disposition', 'attachment; filename="session-diff.txt"')
+          .send(formatReplayDiff(diff));
+        return;
+      }
+
+      res.json(diff);
+    });
+
+    // Full export bundle — all operator views for a session in one response
+    r.get('/sessions/:id/export-bundle', (req, res) => {
+      const session = this.deps.sessionStore.getSession(req.params.id);
+      if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+
+      const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      const integrityResult = checkAuditIntegrity(pack);
+
+      const bundle = {
+        sessionId: req.params.id,
+        exportedAt: new Date().toISOString(),
+        replayPack: pack,
+        summary: formatReplaySummary(pack),
+        integrityReport: integrityResult,
+        integrityReportText: formatIntegrityReport(integrityResult),
+        artifactManifest: pack.artifacts.map((a) => ({
+          id: a.id,
+          type: a.type,
+          uri: a.uri,
+          label: a.label,
+          invocationId: a.invocationId,
+          provenanceId: a.provenanceId,
+          checksum: a.checksum,
+          retentionClass: a.retentionClass,
+          createdAt: a.createdAt,
+        })),
+      };
+
+      res.json(bundle);
     });
 
     // ----- Tasks -----
