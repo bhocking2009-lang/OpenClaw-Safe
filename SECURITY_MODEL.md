@@ -136,11 +136,27 @@ Principals with `trustLevel: 'low'` are denied any tool with risk class
 B, C, D, E, or F by a dedicated policy rule that fires before class-level
 allow rules.
 
-### 3.11 Readonly sessions are restricted to Class A
+### 3.10b Readonly sessions are restricted to Class A
 
 Sessions with `mode: 'readonly'` are denied any tool with risk class
 B, C, D, E, or F by a dedicated policy rule that fires before class-level
 allow rules.
+
+A plugin may only invoke a capability listed in its `capabilities` manifest field. The gateway enforces this before the `PolicyEngine.evaluate()` call. A capability not in the manifest results in a `plugin.capability.denied` audit event and a 403 response.
+
+The plugin's `riskClass` is used verbatim as `toolRiskClass` in the `PolicyContext`. A plugin cannot self-assign a lower risk class to obtain broader permissions.
+
+### 3.12 Plugins cannot access the DB, audit log, or runtime workers directly
+
+`PluginStore` holds manifest/state data only. It has no reference to `AuditLog`, `ToolBroker`, or any `WorkerExecutor`. The import boundary check enforces this at the package level (`plugins/*` must not import `core/broker`, `core/audit`, `core/session`).
+
+### 3.13 Delegation cannot widen capabilities or budget
+
+When a parent task delegates to a child, the child's `capabilitySet` is intersected with the parent's. The child's `budgetCap` must not exceed the parent's remaining budget. Both constraints are enforced atomically in the delegate route; violation results in a 400 and an audit event.
+
+### 3.14 Delegation depth is capped at 5
+
+`MAX_DELEGATION_DEPTH = 5`. Attempts to exceed this emit `delegation.depth.exceeded` and return 400. The child count per parent is also capped at `MAX_CHILDREN_PER_TASK = 20`.
 
 ---
 

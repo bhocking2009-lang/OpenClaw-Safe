@@ -14,8 +14,12 @@ A local-first agent operating system with a policy broker, sandbox-first executi
 | 6 | Budget enforcement (session budget guard + decrement) | ✅ Complete |
 | 7 | Browser workflow (`browser_doc_fetch`, Class D, narrow operator surface) | ✅ Complete |
 | 8 | Browser hardening — typed failure events, IP/URL input guards, export bundle integrity, budget concurrency safety | ✅ Complete |
+| 9 | Channels ingress, operator export bundle, policy import/export, event-bus | ✅ Complete |
+| 10 | Persistence, recovery, lifecycle management (prune/archive/migrate) | ✅ Complete |
+| 11 | Delegation maturity — tree reconstruction, budget partitioning, recursive cancellation, depth/child/loop guards | ✅ Complete |
+| 12 | Plugin / extension platform — manifest validation, lifecycle, broker-mediated invocation, audit visibility | ✅ Complete |
 
-546 tests across 21 suites. All passing.
+735 tests across 25 suites. All passing.
 
 ## Design Goals
 
@@ -37,16 +41,18 @@ A local-first agent operating system with a policy broker, sandbox-first executi
 | `src/core/policy-store.ts` | Persistent operator-managed policy rule store (SQLite) |
 | `src/core/broker.ts` | Tool broker (policy check → approval → execution → audit → budget) |
 | `src/core/audit.ts` | Append-only audit log (SQLite-backed) |
-| `src/core/session.ts` | Session/task management + budget enforcement |
+| `src/core/session.ts` | Session/task management, delegation tree, budget enforcement |
 | `src/core/approval.ts` | Approval inbox and resolution |
 | `src/core/memory.ts` | Layered memory service |
 | `src/core/agent.ts` | Agent runtime (policy-filtered tool visibility, agentic loop) |
 | `src/core/artifacts.ts` | Artifact store (content-addressed, session-scoped) |
 | `src/core/replay.ts` | Replay pack export, manifest, display, and export-bundle integrity |
 | `src/core/display.ts` | Pure formatting layer (replay summary, diff, policy explanation, integrity report) |
+| `src/core/lifecycle.ts` | Session recovery, pruning, archiving, schema migration |
+| `src/core/plugin-store.ts` | Persistent plugin manifest and lifecycle state (SQLite) |
 | `src/core/gateway.ts` | Gateway kernel (HTTP + WebSocket API, loopback-only by default) |
 | `src/channels/adapter.ts` | Channel adapter interface and stubs |
-| `src/plugins/registry.ts` | Plugin manifest validation and registry |
+| `src/plugins/registry.ts` | Plugin manifest schema validation and registry |
 | `src/workers/sandbox.ts` | Sandbox and stub workers |
 | `src/workers/browser.ts` | Browser doc-fetch worker (allowlist, private-IP guard, typed failure events) |
 | `src/cli/index.ts` | CLI commands |
@@ -101,29 +107,81 @@ openclaw replay-export --session <id>   # Export replay pack
 
 ```
 GET  /health
-POST /v1/auth/principals
-GET  /v1/auth/principals/:id
-POST /v1/agents
-POST /v1/sessions
-GET  /v1/sessions/:id
-PATCH /v1/sessions/:id
-GET  /v1/sessions/:id/export-bundle
-POST /v1/tasks
-GET  /v1/tasks/:id
-PATCH /v1/tasks/:id/state
-GET  /v1/approvals
-POST /v1/approvals
-POST /v1/approvals/:id/resolve
-GET  /v1/audit
-POST /v1/memory
-GET  /v1/memory
-POST /v1/plugins
-GET  /v1/plugins
-POST /v1/channels/ingest
-POST /v1/browser/doc-fetch
+
+# Auth & Identity
+POST   /v1/auth/principals
+GET    /v1/auth/principals
+GET    /v1/auth/principals/:id
+
+# Agents
+POST   /v1/agents
+GET    /v1/agents
+GET    /v1/agents/:id
+
+# Sessions
+POST   /v1/sessions
+GET    /v1/sessions
+GET    /v1/sessions/:id
+PATCH  /v1/sessions/:id
+GET    /v1/sessions/:id/replay-export
+GET    /v1/sessions/:id/replay-summary
+GET    /v1/sessions/:id/audit-integrity
+GET    /v1/sessions/:id/export-bundle
+POST   /v1/sessions/diff
+
+# Tasks & Delegation
+POST   /v1/tasks
+GET    /v1/tasks/:id
+PATCH  /v1/tasks/:id/state
+POST   /v1/tasks/:id/delegate
+POST   /v1/tasks/:id/cancel
+GET    /v1/tasks/:id/tree
+
+# Approvals
+GET    /v1/approvals
+POST   /v1/approvals
+POST   /v1/approvals/:id/resolve
+
+# Artifacts
+GET    /v1/artifacts
+GET    /v1/artifacts/:id
+
+# Audit
+GET    /v1/audit
+GET    /v1/audit/:id
+
+# Memory
+POST   /v1/memory
+GET    /v1/memory
+DELETE /v1/memory/:id
+
+# Policy
+GET    /v1/policy/rules
+POST   /v1/policy/rules
+DELETE /v1/policy/rules/:id
+PUT    /v1/policy/rules/reset
+GET    /v1/policy/rules/export
+POST   /v1/policy/rules/import
+POST   /v1/policy/explain
+
+# Plugins
+POST   /v1/plugins
+GET    /v1/plugins
+GET    /v1/plugins/:id
+PATCH  /v1/plugins/:id/state
+DELETE /v1/plugins/:id
+POST   /v1/plugins/:id/invoke
+
+# Channels
+POST   /v1/channels/ingest
+
+# Browser
+POST   /v1/browser/doc-fetch
 ```
 
 WebSocket event stream: `ws://127.0.0.1:4242?token=<secret>`
+
+See [OPERATOR_DOCS.md](./OPERATOR_DOCS.md) for full endpoint reference.
 
 ## Running Tests
 
@@ -131,8 +189,23 @@ WebSocket event stream: `ws://127.0.0.1:4242?token=<secret>`
 npm test
 ```
 
-## Architecture and Security
+## Key Guarantees
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — authoritative system architecture and execution flow
-- [SECURITY_MODEL.md](./SECURITY_MODEL.md) — threat model, trust assumptions, and security invariants
-- [CONTRIBUTING_GUARDRAILS.md](./CONTRIBUTING_GUARDRAILS.md) — non-negotiable rules for contributors and coding agents
+1. **Every tool call goes through the broker** — no shortcut exists to bypass policy evaluation.
+2. **Every non-Class-A execution is audited** — the audit log is append-only; deletes require explicit lifecycle pruning.
+3. **Plugins cannot exceed declared capabilities** — plugin invocation is mediated through the same broker/policy stack as built-in tools.
+4. **Delegation enforces inheritance** — child tasks cannot widen parent capabilities, budget, or depth (max depth: 5, max children: 20).
+5. **Replay packs are self-describing** — every session can be exported as a self-contained, verifiable bundle.
+6. **Low-trust principals are Class A only** — this is a hard policy rule, not a configuration option.
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Authoritative system architecture and execution flow |
+| [SECURITY_MODEL.md](./SECURITY_MODEL.md) | Threat model, trust assumptions, and security invariants |
+| [TRUST_AND_VERIFICATION.md](./TRUST_AND_VERIFICATION.md) | How trust is established and behavior is verified |
+| [OPERATOR_DOCS.md](./OPERATOR_DOCS.md) | Full API endpoint reference |
+| [REPLAY_SPEC.md](./REPLAY_SPEC.md) | Replay pack structure, audit schema, and integrity rules |
+| [CONTRIBUTING_GUARDRAILS.md](./CONTRIBUTING_GUARDRAILS.md) | Non-negotiable rules for contributors and coding agents |
+| [CHANGELOG.md](./CHANGELOG.md) | Phase-by-phase evolution summary |

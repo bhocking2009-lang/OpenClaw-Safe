@@ -46,21 +46,28 @@ through the broker is a defect.
 ```
 src/
 ├── core/
-│   ├── types.ts          All domain contracts (no business logic)
+│   ├── types.ts          All domain contracts (no business logic, no imports)
 │   ├── policy.ts         Policy engine — pure evaluation, imports only types
+│   ├── policy-store.ts   Operator-managed policy rule persistence (SQLite)
 │   ├── broker.ts         Tool broker — orchestrates the execution flow
 │   ├── audit.ts          Append-only SQLite audit log
-│   ├── session.ts        Session and task persistence
+│   ├── session.ts        Session and task persistence, delegation tree
 │   ├── approval.ts       Approval inbox and resolution
 │   ├── memory.ts         Layered memory store
 │   ├── agent.ts          Agent runtime (model invocation, agentic loop)
+│   ├── artifacts.ts      Content-addressed artifact store
+│   ├── replay.ts         Replay pack export, manifest, diff, bundle validation
+│   ├── display.ts        Pure formatting layer (no side effects)
+│   ├── lifecycle.ts      Session recovery, pruning, archiving, migrations
+│   ├── plugin-store.ts   Plugin manifest and lifecycle persistence (SQLite)
 │   └── gateway.ts        HTTP + WebSocket control plane
 ├── channels/
 │   └── adapter.ts        Channel adapter interface (ingest only, no direct tool calls)
 ├── plugins/
-│   └── registry.ts       Plugin manifest validation
+│   └── registry.ts       Plugin manifest schema validation and registry
 ├── workers/
-│   └── sandbox.ts        SandboxWorker + StubWorker
+│   ├── sandbox.ts        SandboxWorker + StubWorker
+│   └── browser.ts        Browser doc-fetch worker (allowlist, IP guard, typed events)
 └── cli/
     └── index.ts           CLI commands
 ```
@@ -69,11 +76,13 @@ src/
 
 | Package | May import | Must NOT import |
 |---|---|---|
-| `core/policy.ts` | `core/types.ts` | `core/gateway.ts`, `core/session.ts`, `core/audit.ts`, `core/broker.ts`, `core/agent.ts`, `workers/*`, `plugins/*` |
 | `core/types.ts` | nothing | anything |
+| `core/policy.ts` | `core/types.ts` | `core/gateway.ts`, `core/session.ts`, `core/audit.ts`, `core/broker.ts`, `core/agent.ts`, `workers/*`, `plugins/*`, `core/policy-store.ts`, `core/artifacts.ts`, `core/replay.ts`, `core/memory.ts`, `core/approval.ts` |
 | `channels/*` | `core/types.ts` | `workers/*`, `core/broker.ts` directly |
-| `workers/*` | `core/types.ts`, `core/broker.ts` (WorkerExecutor interface only) | `core/gateway.ts`, `core/session.ts`, `core/audit.ts`, `core/policy.ts` |
-| `plugins/*` | `core/types.ts` | any core runtime packages |
+| `workers/*` | `core/types.ts` | `core/gateway.ts`, `core/session.ts`, `core/audit.ts`, `core/policy.ts` |
+| `plugins/*` | `core/types.ts` | `core/broker.ts`, `core/agent.ts`, `core/gateway.ts`, `core/audit.ts`, `core/session.ts` |
+
+These boundaries are verified on every push via `npm run check:boundaries`.
 
 ---
 
@@ -201,15 +210,69 @@ is attempted.
 
 ---
 
-## 10. Plugin Isolation
+## 11. Delegation Model
 
-Plugins run in isolated processes by default (`executionMode: isolated_process`).
+Tasks may spawn child tasks via `POST /tasks/:id/delegate`. The following constraints are enforced atomically at delegation time:
+
+- **Depth cap**: `delegationDepth` may not exceed `MAX_DELEGATION_DEPTH` (5). Violation emits `delegation.depth.exceeded`.
+- **Child count cap**: a parent may have at most `MAX_CHILDREN_PER_TASK` (20) direct children. Violation emits `delegation.children.exceeded`.
+- **Capability narrowing**: the child's `capabilitySet` must be a subset of the parent's. Capabilities not present in the parent are silently dropped. If narrowing occurred, `delegation.capability.restricted` is emitted.
+- **Budget partition**: the child's `budgetCap` must not exceed the parent's remaining budget. Violation emits `delegation.budget.exceeded`. On success, `delegation.budget.allocated` is emitted.
+- **Loop detection**: the ancestry chain is walked; if the prospective parent appears as a descendant, the request is rejected with `delegation.loop.detected`.
+
+The full delegation subtree is available via `GET /tasks/:id/tree`, which returns a recursive `DelegationTreeNode` structure. `POST /tasks/:id/cancel` cancels the task and all non-terminal descendants, emitting `task.cancelled` for each.
+
+---
+
+## 12. Lifecycle Management
+
+`LifecycleManager` (`src/core/lifecycle.ts`) handles maintenance operations:
+
+- **`recoverSessions()`** — classifies interrupted tasks on startup into `resumable`, `failed`, or `abandoned` states and updates their `TaskState`.
+- **`pruneAuditRecords(retentionDays)`** — removes audit records older than the retention window.
+- **`pruneArtifacts(retentionClass, olderThan)`** — removes artifacts by retention class and age.
+- **`pruneSessions(olderThan)`** — removes closed sessions and their dependent tasks.
+- **`validateArchive(pack)`** — validates a replay pack for schema consistency.
+- **`runMigrations(db)`** — applies forward-only schema migrations (currently `CURRENT_SCHEMA_VERSION = 1`).
+
+---
+
+## 13. Plugin Platform
+
+Plugins extend the system through the gateway, not around it. The plugin lifecycle is:
+
+```
+install (POST /plugins)          → state: installed
+  │
+  ├─ validate manifest schema (Zod)
+  ├─ emit plugin.installed audit event
+  │
+enable (PATCH /plugins/:id/state)  → state: enabled
+  │
+  ├─ version compatibility check (major version must match)
+  ├─ emit plugin.enabled audit event
+  │
+invoke (POST /plugins/:id/invoke)
+  │
+  ├─ state guard (plugin must be enabled)
+  ├─ capability check (capability must be in plugin.capabilities)
+  ├─ PolicyEngine.evaluate() with plugin.riskClass
+  ├─ emit plugin.action or plugin.capability.denied / plugin.action.denied
+  │
+disable (PATCH /plugins/:id/state) → state: disabled
+  │
+  └─ emit plugin.disabled audit event
+  
+remove (DELETE /plugins/:id)       → removed from store
+  └─ emit plugin.removed audit event
+```
+
+The `PluginStore` persists plugin manifests and state in SQLite. It has **no access** to `AuditLog`, `ToolBroker`, or any runtime worker. All audit writing is done by the gateway route, not the store.
+
 A plugin manifest must declare:
-- `capabilities`: the tool names the plugin provides.
+- `capabilities`: tool names the plugin provides (used for capability check at invocation).
+- `riskClass`: A–F, used to build the `PolicyContext` for policy evaluation.
 - `allowedNetworkDomains`: outbound network allowlist.
 - `declaredSecretNeeds`: secret names the plugin may access.
-- `packageHash`: SHA-256 of the plugin package (pinned).
-
-Plugins may not access secrets, network, or host resources beyond their
-declared manifest. Plugin execution is subject to the same broker/policy
-flow as built-in tools.
+- `packageHash`: SHA-256 of the plugin package.
+- `executionMode`: `isolated_process` | `container` | `in_process_trusted`.

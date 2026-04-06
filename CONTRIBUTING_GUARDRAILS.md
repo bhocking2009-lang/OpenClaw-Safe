@@ -36,11 +36,14 @@ Any deviation is a defect.
 - Agent calling runtime directly
 - Gateway invoking tools without broker
 - Plugins executing host commands directly
+- Plugin directly accessing AuditLog, SessionStore, or ToolBroker
 - Silent sandbox → host fallback
 - Skipping approval because "trusted user"
 - Unsafe type casting at API boundaries
 - Logging secrets or sensitive data
 - Expanding permissions to make tests pass
+- Widening child task capabilities beyond parent's capabilitySet
+- Increasing child task budgetCap beyond parent's remaining budget
 
 ---
 
@@ -86,16 +89,40 @@ Approval scope must be explicit:
 
 ## 7. Audit Requirements
 
-Every operation must emit:
+Every operation must emit the appropriate audit events. The actual event types emitted are:
 
-- policy.decision
-- approval.requested (if applicable)
-- approval.resolved (if applicable)
-- tool.execution.started
-- tool.execution.finished
-- artifact.created (if applicable)
+**Tool execution:**
+- `tool.started` — before worker executes
+- `tool.finished` — after successful execution
+- `tool.error` — after failed execution
+- `tool.denied` — capability or policy denial
 
-No silent execution paths.
+**Policy and approval:**
+- `policy.denied` — policy engine or approval denial
+- `approval.requested` — approval request created
+- `approval.resolved` — approval request resolved
+
+**Budget:**
+- `budget.exhausted` — session budget at zero
+
+**Delegation:**
+- `delegation.depth.exceeded`, `delegation.children.exceeded`, `delegation.loop.detected`
+- `delegation.budget.exceeded`, `delegation.budget.allocated`, `delegation.capability.restricted`
+- `task.cancelled` — per task in a cancelled subtree
+
+**Plugin lifecycle:**
+- `plugin.installed`, `plugin.enabled`, `plugin.disabled`, `plugin.removed`
+- `plugin.action`, `plugin.capability.denied`, `plugin.action.denied`
+
+**Channel:**
+- `channel.ingest`
+
+**Browser:**
+- `browser.allowlist.denied`, `browser.protocol.denied`, `browser.redirect.denied`
+- `browser.timeout`, `browser.body.too_large`, `browser.network.error`
+- `browser.content_type.denied`, `browser.url.denied`
+
+No silent execution paths. Every state change must leave an audit trail.
 
 ---
 
