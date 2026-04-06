@@ -100,6 +100,9 @@ export function formatReplaySummary(pack: ReplayPack): string {
   lines.push(`  Records   : ${manifest.recordCount}`);
   lines.push(`  Tools     : ${manifest.toolsInvoked.join(', ') || '(none)'}`);
   lines.push(`  Principals: ${manifest.principalsInvolved.join(', ') || '(none)'}`);
+  if (manifest.lastKnownBudgetRemaining !== undefined) {
+    lines.push(`  Budget    : ${manifest.lastKnownBudgetRemaining} remaining`);
+  }
   lines.push(`  Stats     : ${manifest.executionCount} execution(s)  ·  ${manifest.denialCount} denial(s)  ·  ${manifest.approvalCount} approval event(s)  ·  ${manifest.budgetExhaustedCount} budget-exhausted event(s)  ·  ${manifest.browserFetchCount} browser fetch(es)  ·  ${manifest.browserDenialCount} browser denial(s)`);
   lines.push('');
 
@@ -108,7 +111,9 @@ export function formatReplaySummary(pack: ReplayPack): string {
     (r) => r.eventType === 'tool.denied' || r.eventType === 'policy.denied' ||
            r.eventType === 'budget.exhausted' || r.eventType === 'delegation.depth.exceeded' ||
            r.eventType === 'browser.allowlist.denied' || r.eventType === 'browser.protocol.denied' ||
-           r.eventType === 'browser.redirect.denied'
+           r.eventType === 'browser.redirect.denied' || r.eventType === 'browser.timeout' ||
+           r.eventType === 'browser.body.too_large' || r.eventType === 'browser.network.error' ||
+           r.eventType === 'browser.content_type.denied' || r.eventType === 'browser.url.denied'
   );
 
   lines.push(section('Decisions'));
@@ -121,7 +126,12 @@ export function formatReplaySummary(pack: ReplayPack): string {
       const isBrowserDenial =
         r.eventType === 'browser.allowlist.denied' ||
         r.eventType === 'browser.protocol.denied' ||
-        r.eventType === 'browser.redirect.denied';
+        r.eventType === 'browser.redirect.denied' ||
+        r.eventType === 'browser.timeout' ||
+        r.eventType === 'browser.body.too_large' ||
+        r.eventType === 'browser.network.error' ||
+        r.eventType === 'browser.content_type.denied' ||
+        r.eventType === 'browser.url.denied';
       const icon = isBudget ? '💰' : isDelegation ? '🚫' : isBrowserDenial ? '🔒' : '⛔';
       const reason  = r.policyDecision?.reason ?? r.error ?? 'unknown';
       const ruleId  = r.policyDecision?.matchedRuleId ? ` [rule: ${r.policyDecision.matchedRuleId}]` : '';

@@ -177,6 +177,7 @@ describe('BrowserWorker redirect control', () => {
       capturedOptions = options;
       return {
         status: 200,
+        headers: { get: (_h: string) => 'text/plain' },
         text: async () => 'hello',
       };
     }) as typeof fetch;
@@ -193,6 +194,7 @@ describe('BrowserWorker redirect control', () => {
       capturedOptions = options;
       return {
         status: 200,
+        headers: { get: (_h: string) => 'text/plain' },
         text: async () => '',
       };
     }) as typeof fetch;
@@ -206,6 +208,7 @@ describe('BrowserWorker redirect control', () => {
   it('networkSummary redacts Authorization header value', async () => {
     globalThis.fetch = jest.fn().mockImplementation(async () => ({
       status: 200,
+      headers: { get: (_h: string) => 'text/plain' },
       text: async () => 'ok',
     })) as typeof fetch;
 

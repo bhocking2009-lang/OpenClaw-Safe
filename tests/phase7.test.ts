@@ -85,6 +85,7 @@ function mockFetch(body: string, status = 200) {
   const original = globalThis.fetch;
   globalThis.fetch = jest.fn().mockResolvedValue({
     status,
+    headers: { get: (_h: string) => 'text/plain' },
     text: async () => body,
   }) as typeof fetch;
   return () => { globalThis.fetch = original; };

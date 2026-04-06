@@ -34,8 +34,17 @@ export interface ReplayPackManifest {
   budgetExhaustedCount: number;
   /** Number of successful browser_doc_fetch tool completions */
   browserFetchCount: number;
-  /** Number of browser-specific denial events (allowlist, protocol, redirect) */
+  /**
+   * Number of browser-specific denial events (allowlist, protocol, redirect,
+   * timeout, body too large, network error, content-type, URL denied).
+   */
   browserDenialCount: number;
+  /**
+   * Last known budget remaining in this session, taken from the most recent
+   * audit record that carries a budgetRemaining field. Undefined if no budget
+   * information was recorded.
+   */
+  lastKnownBudgetRemaining?: number;
 }
 
 export interface ReplayPack {
@@ -114,12 +123,30 @@ export function buildReplayPack(
     (r) => r.eventType === 'tool.finished' && r.toolName === 'browser_doc_fetch'
   ).length;
 
+  // All browser-specific denial/failure event types
+  const BROWSER_DENIAL_EVENTS = new Set([
+    'browser.allowlist.denied',
+    'browser.protocol.denied',
+    'browser.redirect.denied',
+    'browser.timeout',
+    'browser.body.too_large',
+    'browser.network.error',
+    'browser.content_type.denied',
+    'browser.url.denied',
+  ]);
+
   const browserDenialCount = auditRecords.filter(
-    (r) =>
-      r.eventType === 'browser.allowlist.denied' ||
-      r.eventType === 'browser.protocol.denied' ||
-      r.eventType === 'browser.redirect.denied'
+    (r) => BROWSER_DENIAL_EVENTS.has(r.eventType)
   ).length;
+
+  // Last known budget remaining: most recent audit record with a defined budgetRemaining
+  let lastKnownBudgetRemaining: number | undefined;
+  for (let i = auditRecords.length - 1; i >= 0; i--) {
+    if (auditRecords[i].budgetRemaining !== undefined) {
+      lastKnownBudgetRemaining = auditRecords[i].budgetRemaining;
+      break;
+    }
+  }
 
   let durationMs: number | null = null;
   if (auditRecords.length >= 2) {
@@ -143,6 +170,7 @@ export function buildReplayPack(
     budgetExhaustedCount,
     browserFetchCount,
     browserDenialCount,
+    lastKnownBudgetRemaining,
   };
 
   return { manifest, auditRecords, artifacts };
@@ -163,6 +191,11 @@ const EVENT_EMOJI: Record<string, string> = {
   'browser.allowlist.denied': '🔒',
   'browser.protocol.denied':  '🔒',
   'browser.redirect.denied':  '🔒',
+  'browser.timeout':          '⏱',
+  'browser.body.too_large':   '📦',
+  'browser.network.error':    '🌐',
+  'browser.content_type.denied': '🔒',
+  'browser.url.denied':       '🔒',
   'approval.requested':       '⏳',
   'approval.resolved':        '✅',
   'channel.ingest':           '📨',
@@ -519,3 +552,67 @@ export function checkAuditIntegrity(pack: ReplayPack): AuditIntegrityResult {
   return { valid: violations.length === 0, violations };
 }
 
+
+// ---------------------------------------------------------------------------
+// C. Export bundle integrity validation
+// ---------------------------------------------------------------------------
+
+export interface ExportBundleViolation {
+  kind: 'record_count_mismatch' | 'artifact_count_mismatch' | 'dangling_provenance';
+  message: string;
+}
+
+export interface ExportBundleValidationResult {
+  valid: boolean;
+  violations: ExportBundleViolation[];
+}
+
+/**
+ * Validate that a replay pack is internally self-consistent:
+ *   1. manifest.recordCount === auditRecords.length
+ *   2. manifest.artifactCount === artifacts.length
+ *   3. All artifact provenanceIds appear as taskId values in the audit records
+ *      (or appear in the set of session-level provenanceId references).
+ *
+ * This is a pure function — no side effects, no DB access.
+ */
+export function validateExportBundle(pack: ReplayPack): ExportBundleValidationResult {
+  const violations: ExportBundleViolation[] = [];
+
+  if (pack.manifest.recordCount !== pack.auditRecords.length) {
+    violations.push({
+      kind: 'record_count_mismatch',
+      message:
+        `manifest.recordCount (${pack.manifest.recordCount}) does not match ` +
+        `auditRecords.length (${pack.auditRecords.length})`,
+    });
+  }
+
+  if (pack.manifest.artifactCount !== pack.artifacts.length) {
+    violations.push({
+      kind: 'artifact_count_mismatch',
+      message:
+        `manifest.artifactCount (${pack.manifest.artifactCount}) does not match ` +
+        `artifacts.length (${pack.artifacts.length})`,
+    });
+  }
+
+  // Build set of all taskIds seen in audit records
+  const knownTaskIds = new Set<string>();
+  for (const record of pack.auditRecords) {
+    if (record.taskId) knownTaskIds.add(record.taskId);
+  }
+
+  for (const artifact of pack.artifacts) {
+    if (artifact.provenanceId && !knownTaskIds.has(artifact.provenanceId)) {
+      violations.push({
+        kind: 'dangling_provenance',
+        message:
+          `artifact "${artifact.id}" has provenanceId "${artifact.provenanceId}" ` +
+          `which does not correspond to any taskId in the audit records`,
+      });
+    }
+  }
+
+  return { valid: violations.length === 0, violations };
+}

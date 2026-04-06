@@ -53,12 +53,15 @@ export interface BrowserWorkerConfig {
   timeoutMs: number;
   /** Maximum response body size in bytes. Default: 512 KiB. */
   maxBodyBytes: number;
+  /** Maximum URL length in characters. Default: 2048. */
+  maxUrlLength: number;
 }
 
 const DEFAULT_CONFIG: BrowserWorkerConfig = {
   allowedDomains: [],
   timeoutMs: 15_000,
   maxBodyBytes: 512 * 1024,
+  maxUrlLength: 2048,
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +105,71 @@ export function isDomainAllowed(hostname: string, allowedDomains: string[]): boo
   return allowedDomains.some((entry) => matchesDomainEntry(hostname, entry));
 }
 
+/**
+ * Returns true if `hostname` is a private/loopback/link-local range that
+ * must not be contacted unless explicitly on the allowlist.
+ *
+ * Covers:
+ *   - loopback: 127.0.0.0/8, ::1
+ *   - link-local: 169.254.0.0/16, fe80::/10
+ *   - private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7
+ *   - unspecified / broadcast: 0.0.0.0, 255.255.255.255
+ *   - literal "localhost"
+ */
+export function isPrivateOrInternalHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+
+  // Named localhost
+  if (h === 'localhost') return true;
+
+  // IPv6 loopback / link-local / private (ULA)
+  if (h === '::1') return true;
+  if (h.startsWith('fe80:')) return true;   // fe80::/10 link-local
+  if (h.startsWith('fc') || h.startsWith('fd')) return true; // fc00::/7 ULA
+
+  // IPv4 dotted-decimal ranges
+  const parts = h.split('.');
+  if (parts.length !== 4) return false;
+  const [a, b, c] = parts.map(Number);
+  if ([a, b, c].some(isNaN)) return false;
+
+  if (a === 127) return true;               // 127.0.0.0/8 loopback
+  if (a === 10) return true;                // 10.0.0.0/8 private
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
+  if (a === 192 && b === 168) return true;  // 192.168.0.0/16 private
+  if (a === 169 && b === 254) return true;  // 169.254.0.0/16 link-local
+  if (a === 0 || (a === 255 && b === 255)) return true; // 0.0.0.0, broadcast
+
+  return false;
+}
+
+/**
+ * Returns true if `hostname` looks like a bare IP address (IPv4 or IPv6).
+ * IPv6 addresses are typically wrapped in brackets in URLs; after URL parsing
+ * the brackets are stripped.
+ */
+export function isIpLiteral(hostname: string): boolean {
+  // IPv4: four decimal octets
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return true;
+  // IPv6: contains colons
+  if (hostname.includes(':')) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Content-type validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the content-type is acceptable for a documentation fetch.
+ * Accepts text/* and application/json only.
+ */
+export function isAcceptableContentType(contentType: string | null): boolean {
+  if (!contentType) return true; // absent content-type: allow (server may omit for plain responses)
+  const lower = contentType.toLowerCase().split(';')[0].trim();
+  return lower.startsWith('text/') || lower === 'application/json';
+}
+
 // ---------------------------------------------------------------------------
 // BrowserWorker
 // ---------------------------------------------------------------------------
@@ -127,6 +195,14 @@ export class BrowserWorker implements WorkerExecutor {
       throw new Error('BrowserWorker: params.url must be a non-empty string');
     }
 
+    // Enforce max URL length before parsing
+    if (rawUrl.length > this.config.maxUrlLength) {
+      throw new BrowserWorkerError(
+        `BrowserWorker: URL exceeds maximum length of ${this.config.maxUrlLength} characters (got ${rawUrl.length}).`,
+        'browser.url.denied'
+      );
+    }
+
     let parsed: URL;
     try {
       parsed = new URL(rawUrl);
@@ -138,6 +214,24 @@ export class BrowserWorker implements WorkerExecutor {
       throw new BrowserWorkerError(
         `BrowserWorker: unsupported protocol "${parsed.protocol}". Only http/https allowed.`,
         'browser.protocol.denied'
+      );
+    }
+
+    // Reject private/internal IP ranges and localhost — prevents SSRF.
+    // This check applies even before allowlist: an IP literal that happens
+    // to be on the allowlist is still rejected here.
+    if (isPrivateOrInternalHost(parsed.hostname)) {
+      throw new BrowserWorkerError(
+        `BrowserWorker: URL targets a private/internal host "${parsed.hostname}" which is not allowed.`,
+        'browser.url.denied'
+      );
+    }
+
+    // Reject bare IP literals — documentation URLs must use named domains.
+    if (isIpLiteral(parsed.hostname)) {
+      throw new BrowserWorkerError(
+        `BrowserWorker: URL uses an IP literal "${parsed.hostname}". Only named domain hostnames are allowed.`,
+        'browser.url.denied'
       );
     }
 
@@ -188,21 +282,50 @@ export class BrowserWorker implements WorkerExecutor {
           referrerPolicy: 'no-referrer',
         });
       } catch (fetchErr) {
-        // Detect redirect errors from fetch and convert to typed denial.
+        // Timeout: the AbortController fires when the timer expires.
+        if (
+          fetchErr instanceof Error &&
+          (fetchErr.name === 'AbortError' || /abort/i.test(fetchErr.message))
+        ) {
+          throw new BrowserWorkerError(
+            `BrowserWorker: request to "${rawUrl}" timed out after ${this.config.timeoutMs}ms.`,
+            'browser.timeout'
+          );
+        }
+        // Redirect denial from fetch's redirect:error mode.
         if (fetchErr instanceof TypeError && /redirect/i.test((fetchErr as Error).message)) {
           throw new BrowserWorkerError(
             `BrowserWorker: redirect denied for "${rawUrl}" — cross-domain redirects are not allowed: ${(fetchErr as Error).message}`,
             'browser.redirect.denied'
           );
         }
-        throw fetchErr;
+        // Other network errors (DNS failure, connection refused, etc.)
+        throw new BrowserWorkerError(
+          `BrowserWorker: network error fetching "${rawUrl}": ${(fetchErr as Error).message}`,
+          'browser.network.error'
+        );
       }
 
       responseStatus = response.status;
 
-      // Cap response body
+      // Content-type check: only accept text/* and application/json.
+      const contentType = response.headers.get('content-type');
+      if (!isAcceptableContentType(contentType)) {
+        throw new BrowserWorkerError(
+          `BrowserWorker: response content-type "${contentType}" is not acceptable. Only text/* and application/json are allowed.`,
+          'browser.content_type.denied'
+        );
+      }
+
+      // Read body and enforce size limit (explicit denial, not silent truncation).
       const text = await response.text();
-      responseBody = text.slice(0, this.config.maxBodyBytes);
+      if (text.length > this.config.maxBodyBytes) {
+        throw new BrowserWorkerError(
+          `BrowserWorker: response body (${text.length} bytes) exceeds the maximum of ${this.config.maxBodyBytes} bytes.`,
+          'browser.body.too_large'
+        );
+      }
+      responseBody = text;
       const scrubbedHeaders = scrubHeadersForAudit(headers);
       networkSummary = `${method} ${rawUrl} → ${responseStatus} (${responseBody.length} bytes) headers=${JSON.stringify(scrubbedHeaders)}`;
     } finally {
@@ -233,6 +356,9 @@ export class BrowserWorker implements WorkerExecutor {
       artifacts: [artifactRef],
       startedAt,
       finishedAt,
+      // tokensUsed is always defined for browser workflow — byte count of fetched body.
+      tokensUsed: responseBody.length,
     };
   }
 }
+

@@ -164,7 +164,12 @@ export class ToolBroker {
     }
 
     // Budget exhaustion guard: deny immediately if the session budget is at zero.
-    if (policyCtx.session.budget <= 0) {
+    // Use a fresh DB read when sessionStore is available to avoid concurrency races
+    // where multiple in-flight dispatches see the same stale snapshot budget.
+    const budgetCheckSession = this.sessionStore
+      ? (this.sessionStore.getSession(request.sessionId) ?? policyCtx.session)
+      : policyCtx.session;
+    if (budgetCheckSession.budget <= 0) {
       const invocation = this.buildInvocation(request, schema.defaultRuntimeTarget, now, undefined, 'Session budget exhausted');
       this.auditLog.write({
         sessionId: request.sessionId,

@@ -42,7 +42,7 @@ import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
 import { ArtifactStore } from './artifacts';
 import { PolicyRuleStore, validatePolicyRule } from './policy-store';
-import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayPacks } from './replay';
+import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayPacks, validateExportBundle } from './replay';
 import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatIntegrityReport } from './display';
 import { BrowserWorker } from '../workers/browser';
 
@@ -459,11 +459,13 @@ export class Gateway {
 
       const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
       const integrityResult = checkAuditIntegrity(pack);
+      const bundleValidation = validateExportBundle(pack);
 
       const bundle = {
         sessionId: req.params.id,
         exportedAt: new Date().toISOString(),
         budgetRemaining: session.budget,
+        lastKnownBudgetRemaining: pack.manifest.lastKnownBudgetRemaining,
         budgetExhaustedCount: pack.manifest.budgetExhaustedCount,
         browserFetchCount: pack.manifest.browserFetchCount,
         browserDenialCount: pack.manifest.browserDenialCount,
@@ -471,6 +473,7 @@ export class Gateway {
         summary: formatReplaySummary(pack),
         integrityReport: integrityResult,
         integrityReportText: formatIntegrityReport(integrityResult),
+        bundleValidation,
         artifactManifest: pack.artifacts.map((a) => ({
           id: a.id,
           type: a.type,
