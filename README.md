@@ -1,6 +1,21 @@
-# OpenClaw Secure
+# OpenClaw Safe
 
 A local-first agent operating system with a policy broker, sandbox-first execution, durable tasks, and verifiable tool use.
+
+## Implementation Status
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Core types, policy engine, tool broker, audit log | ✅ Complete |
+| 2 | Session/task management, approval inbox, memory, agent runtime | ✅ Complete |
+| 3 | Gateway kernel (HTTP + WebSocket), CLI, plugin registry | ✅ Complete |
+| 4 | Display layer, replay pack, verifiability test suite | ✅ Complete |
+| 5 | Artifacts, policy-store, architecture protection tests | ✅ Complete |
+| 6 | Budget enforcement (session budget guard + decrement) | ✅ Complete |
+| 7 | Browser workflow (`browser_doc_fetch`, Class D, narrow operator surface) | ✅ Complete |
+| 8 | Browser hardening — typed failure events, IP/URL input guards, export bundle integrity, budget concurrency safety | ✅ Complete |
+
+546 tests across 21 suites. All passing.
 
 ## Design Goals
 
@@ -18,17 +33,22 @@ A local-first agent operating system with a policy broker, sandbox-first executi
 | Module | Purpose |
 |---|---|
 | `src/core/types.ts` | All domain types and contracts |
-| `src/core/policy.ts` | Policy engine with rule-based decisions |
-| `src/core/broker.ts` | Tool broker (policy check → approval → execution → audit) |
+| `src/core/policy.ts` | Policy engine with rule-based decisions and evaluation trace |
+| `src/core/policy-store.ts` | Persistent operator-managed policy rule store (SQLite) |
+| `src/core/broker.ts` | Tool broker (policy check → approval → execution → audit → budget) |
 | `src/core/audit.ts` | Append-only audit log (SQLite-backed) |
-| `src/core/session.ts` | Session and task management |
+| `src/core/session.ts` | Session/task management + budget enforcement |
 | `src/core/approval.ts` | Approval inbox and resolution |
 | `src/core/memory.ts` | Layered memory service |
 | `src/core/agent.ts` | Agent runtime (policy-filtered tool visibility, agentic loop) |
+| `src/core/artifacts.ts` | Artifact store (content-addressed, session-scoped) |
+| `src/core/replay.ts` | Replay pack export, manifest, display, and export-bundle integrity |
+| `src/core/display.ts` | Pure formatting layer (replay summary, diff, policy explanation, integrity report) |
 | `src/core/gateway.ts` | Gateway kernel (HTTP + WebSocket API, loopback-only by default) |
 | `src/channels/adapter.ts` | Channel adapter interface and stubs |
 | `src/plugins/registry.ts` | Plugin manifest validation and registry |
 | `src/workers/sandbox.ts` | Sandbox and stub workers |
+| `src/workers/browser.ts` | Browser doc-fetch worker (allowlist, private-IP guard, typed failure events) |
 | `src/cli/index.ts` | CLI commands |
 
 ## Tool Risk Classes
@@ -87,6 +107,7 @@ POST /v1/agents
 POST /v1/sessions
 GET  /v1/sessions/:id
 PATCH /v1/sessions/:id
+GET  /v1/sessions/:id/export-bundle
 POST /v1/tasks
 GET  /v1/tasks/:id
 PATCH /v1/tasks/:id/state
@@ -99,6 +120,7 @@ GET  /v1/memory
 POST /v1/plugins
 GET  /v1/plugins
 POST /v1/channels/ingest
+POST /v1/browser/doc-fetch
 ```
 
 WebSocket event stream: `ws://127.0.0.1:4242?token=<secret>`
@@ -108,3 +130,9 @@ WebSocket event stream: `ws://127.0.0.1:4242?token=<secret>`
 ```bash
 npm test
 ```
+
+## Architecture and Security
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — authoritative system architecture and execution flow
+- [SECURITY_MODEL.md](./SECURITY_MODEL.md) — threat model, trust assumptions, and security invariants
+- [CONTRIBUTING_GUARDRAILS.md](./CONTRIBUTING_GUARDRAILS.md) — non-negotiable rules for contributors and coding agents
