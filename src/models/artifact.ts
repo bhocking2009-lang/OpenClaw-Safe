@@ -6,6 +6,7 @@ export interface Artifact {
   content: unknown;
   mimeType: string;
   createdAt: Date;
+  tokensUsed?: number;
 }
 
 export function createArtifact(

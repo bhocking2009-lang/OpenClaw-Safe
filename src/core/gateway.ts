@@ -6,21 +6,64 @@ import { TaskStep } from "../models/task_step";
 import { createToolInvocation } from "../models/tool_invocation";
 import { createMemoryItem, MemoryItem } from "../models/memory_item";
 import { ApprovalRequest } from "../models/approval_request";
-import { Artifact } from "../models/artifact";
+import { createArtifact, Artifact } from "../models/artifact";
 import { CapabilityManifest } from "./capability_manifest";
 import { PolicyEngine } from "./policy";
 import { PluginManager } from "./plugin_manager";
 import { ToolBroker } from "./broker";
 import { AuditLog, AuditEventKind } from "./audit_log";
 import { ScopedCapabilityToken } from "./scoped_token";
+import { SessionStore } from "./session_store";
+import { BrowserWorker } from "../workers/browser";
+import { EventBus } from "./event_bus";
+import { ApprovalInbox } from "./approval_inbox";
+
+export const BROWSER_DOC_FETCH_SCHEMA = {
+  name: "browser_doc_fetch",
+  description: "Fetch a document from a URL using the browser worker.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "URL to fetch" },
+      actorId: { type: "string", description: "Actor performing the fetch" },
+    },
+    required: ["url", "actorId"],
+  },
+  toolClass: "browser",
+  riskLevel: "high",
+};
+
+export interface GatewayDependencies {
+  policyEngine: PolicyEngine;
+  pluginManager: PluginManager;
+  toolBroker: ToolBroker;
+  auditLog: AuditLog;
+  sessionStore?: SessionStore;
+  browserWorker?: BrowserWorker;
+  eventBus?: EventBus;
+  approvalInbox?: ApprovalInbox;
+}
+
+type ExtraDeps = Partial<Pick<GatewayDependencies, "sessionStore" | "browserWorker" | "eventBus" | "approvalInbox">>;
 
 export class Gateway {
+  private readonly sessionStore?: SessionStore;
+  private readonly browserWorker?: BrowserWorker;
+  private readonly eventBus?: EventBus;
+  private readonly approvalInbox?: ApprovalInbox;
+
   constructor(
     private readonly policyEngine: PolicyEngine,
     private readonly pluginManager: PluginManager,
     private readonly toolBroker: ToolBroker,
-    private readonly auditLog: AuditLog
-  ) {}
+    private readonly auditLog: AuditLog,
+    extraDeps?: ExtraDeps
+  ) {
+    this.sessionStore = extraDeps?.sessionStore;
+    this.browserWorker = extraDeps?.browserWorker;
+    this.eventBus = extraDeps?.eventBus;
+    this.approvalInbox = extraDeps?.approvalInbox;
+  }
 
   // ------------------------------------------------------------------
   // Session management
@@ -88,6 +131,24 @@ export class Gateway {
       approval,
       breakGlassToken
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Browser document fetch
+  // ------------------------------------------------------------------
+
+  async browserDocFetch(
+    session: Session,
+    url: string,
+    fetchImpl?: Parameters<BrowserWorker["fetch"]>[2]
+  ): Promise<Artifact> {
+    if (!this.browserWorker) {
+      throw new Error("BrowserWorker not configured in GatewayDependencies.");
+    }
+    const result = await this.browserWorker.fetch(url, session.principal.id, fetchImpl);
+    const artifact = createArtifact(session.id, result.body, result.contentType);
+    artifact.tokensUsed = result.tokensUsed;
+    return artifact;
   }
 
   // ------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import { CapabilityManifest, RiskLevel, getCapability } from "./capability_manifest";
 import { AuditLog, AuditEventKind } from "./audit_log";
+import { EvaluationTraceEntry } from "./types";
 
 export enum PolicyDecision {
   ALLOW = "allow",
@@ -17,6 +18,8 @@ export interface PolicyEvaluation {
   toolName: string;
   riskLevel: RiskLevel;
   reason: string;
+  matchedRuleId: string;
+  evaluationTrace?: EvaluationTraceEntry[];
 }
 
 // Default rules (evaluated first-match per risk level).
@@ -29,14 +32,23 @@ const DEFAULT_RULES: PolicyRule[] = [
   { riskLevel: RiskLevel.CRITICAL, decision: PolicyDecision.DENY },
 ];
 
+const RULE_ID_MAP: Record<RiskLevel, string> = {
+  [RiskLevel.LOW]: "rule-low-allow",
+  [RiskLevel.MEDIUM]: "rule-medium-require-approval",
+  [RiskLevel.HIGH]: "rule-high-require-approval",
+  [RiskLevel.CRITICAL]: "rule-critical-deny",
+};
+
 export class PolicyEngine {
   private ruleMap: Map<RiskLevel, PolicyDecision>;
+  private rules: PolicyRule[];
 
   constructor(
     rules: PolicyRule[] = DEFAULT_RULES,
     private readonly auditLog?: AuditLog
   ) {
     // Rules are evaluated in order; first match wins.
+    this.rules = rules;
     this.ruleMap = new Map(rules.map((r) => [r.riskLevel, r.decision]));
   }
 
@@ -47,6 +59,9 @@ export class PolicyEngine {
   ): PolicyEvaluation {
     const risk = this.resolveRisk(toolName, manifest);
     const decision = this.ruleMap.get(risk) ?? PolicyDecision.DENY;
+    const matchedRuleId = this.ruleMap.has(risk)
+      ? (RULE_ID_MAP[risk] ?? `rule-${risk}-custom`)
+      : "rule-default-deny";
 
     const reasonMap: Record<PolicyDecision, string> = {
       [PolicyDecision.ALLOW]: `Tool '${toolName}' is low-risk and auto-approved.`,
@@ -59,6 +74,7 @@ export class PolicyEngine {
       toolName,
       riskLevel: risk,
       reason: reasonMap[decision],
+      matchedRuleId,
     };
 
     if (this.auditLog) {
@@ -71,10 +87,59 @@ export class PolicyEngine {
         tool: toolName,
         risk,
         reason: evaluation.reason,
+        matchedRuleId,
       });
     }
 
     return evaluation;
+  }
+
+  /** Pure evaluation with trace – no side effects (no audit log). */
+  explain(
+    toolName: string,
+    actorId: string,
+    manifest?: CapabilityManifest
+  ): PolicyEvaluation {
+    const risk = this.resolveRisk(toolName, manifest);
+    const allRiskLevels = [RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL];
+    const trace: EvaluationTraceEntry[] = [];
+
+    let decision = PolicyDecision.DENY;
+    let matchedRuleId = "rule-default-deny";
+
+    for (const riskLevel of allRiskLevels) {
+      const ruleDecision = this.ruleMap.get(riskLevel);
+      const ruleId = RULE_ID_MAP[riskLevel] ?? `rule-${riskLevel}-custom`;
+      const isMatch = riskLevel === risk && ruleDecision !== undefined;
+
+      trace.push({
+        ruleId,
+        matched: isMatch,
+        reason: isMatch
+          ? `Risk level '${risk}' matches rule '${ruleId}' -> ${ruleDecision}`
+          : `Risk level '${risk}' does not match rule for '${riskLevel}'`,
+      });
+
+      if (isMatch) {
+        decision = ruleDecision!;
+        matchedRuleId = ruleId;
+      }
+    }
+
+    const reasonMap: Record<PolicyDecision, string> = {
+      [PolicyDecision.ALLOW]: `Tool '${toolName}' is low-risk and auto-approved.`,
+      [PolicyDecision.REQUIRE_APPROVAL]: `Tool '${toolName}' requires human approval (risk=${risk}).`,
+      [PolicyDecision.DENY]: `Tool '${toolName}' is denied by policy (risk=${risk}).`,
+    };
+
+    return {
+      decision,
+      toolName,
+      riskLevel: risk,
+      reason: reasonMap[decision],
+      matchedRuleId,
+      evaluationTrace: trace,
+    };
   }
 
   private resolveRisk(toolName: string, manifest?: CapabilityManifest): RiskLevel {

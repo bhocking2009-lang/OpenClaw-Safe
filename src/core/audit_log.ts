@@ -18,6 +18,8 @@ export enum AuditEventKind {
   CAPABILITY_TOKEN_ISSUED = "capability_token_issued",
   SANDBOX_EXECUTION = "sandbox_execution",
   HOST_ELEVATION = "host_elevation",
+  BUDGET_EXHAUSTED = "budget.exhausted",
+  BROWSER_EVENT = "browser.event",
 }
 
 export interface AuditEvent {

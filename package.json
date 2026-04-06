@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "check:boundaries": "node scripts/check_boundaries.js"
   },
   "engines": {
     "node": ">=20"

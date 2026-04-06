@@ -8,7 +8,7 @@ import { createToolInvocation, InvocationStatus } from "../src/models/tool_invoc
 import { createApprovalRequest, ApprovalStatus } from "../src/models/approval_request";
 
 function makeEval(decision: PolicyDecision, toolName = "my_tool"): PolicyEvaluation {
-  return { decision, toolName, riskLevel: RiskLevel.LOW, reason: "test" };
+  return { decision, toolName, riskLevel: RiskLevel.LOW, reason: "test", matchedRuleId: "rule-low-allow" };
 }
 
 describe("SandboxWorker", () => {
