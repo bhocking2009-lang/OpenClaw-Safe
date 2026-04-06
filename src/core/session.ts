@@ -171,6 +171,10 @@ export class SessionStore {
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   }
 
+  deleteTask(id: string): void {
+    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+  }
+
   // ---------------------------------------------------------------------------
   // Task CRUD
   // ---------------------------------------------------------------------------

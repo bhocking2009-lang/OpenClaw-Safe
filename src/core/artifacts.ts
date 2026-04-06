@@ -123,6 +123,23 @@ export class ArtifactStore {
     this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(id);
   }
 
+  /**
+   * Delete artifacts with the given retentionClass whose createdAt is before
+   * `cutoffAt` (ISO-8601 string).  Returns the number of rows deleted.
+   * Used by LifecycleManager for retention-based pruning.
+   */
+  deleteByRetentionClassOlderThan(
+    retentionClass: RetentionClass,
+    cutoffAt: string
+  ): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM artifacts WHERE retention_class = ? AND created_at < ?`
+      )
+      .run(retentionClass, cutoffAt);
+    return result.changes;
+  }
+
   close(): void {
     this.db.close();
   }

@@ -153,6 +153,22 @@ export class AuditLog {
   }
 
   /**
+   * Delete audit records for a session that were started before `cutoffAt`.
+   * Returns the number of rows deleted.
+   * Intended for retention-based pruning; never deletes 'permanent' records
+   * (there is no retention-class on audit records — all records for a
+   * fully-closed session are eligible once the cutoff passes).
+   */
+  deleteBySessionOlderThan(sessionId: string, cutoffAt: string): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM audit_records WHERE session_id = ? AND started_at < ?`
+      )
+      .run(sessionId, cutoffAt);
+    return result.changes;
+  }
+
+  /**
    * Close the database connection.
    */
   close(): void {
