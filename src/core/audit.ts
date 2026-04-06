@@ -43,7 +43,9 @@ export class AuditLog {
         network_trace_summary TEXT,
         artifacts TEXT,
         session_delta TEXT,
-        error TEXT
+        error TEXT,
+        budget_consumed INTEGER,
+        budget_remaining INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_records(session_id);
       CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_records(task_id);
@@ -62,12 +64,14 @@ export class AuditLog {
         id, session_id, task_id, principal_id, event_type, tool_name,
         params, policy_decision, approval_path, runtime_target,
         started_at, finished_at, stdout, stderr, file_diffs,
-        network_trace_summary, artifacts, session_delta, error
+        network_trace_summary, artifacts, session_delta, error,
+        budget_consumed, budget_remaining
       ) VALUES (
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, ?, ?, ?
+        ?, ?, ?, ?,
+        ?, ?
       )
     `);
 
@@ -90,7 +94,9 @@ export class AuditLog {
       record.networkTraceSummary ?? null,
       record.artifacts ? JSON.stringify(record.artifacts) : null,
       record.sessionDelta ? JSON.stringify(record.sessionDelta) : null,
-      record.error ?? null
+      record.error ?? null,
+      record.budgetConsumed ?? null,
+      record.budgetRemaining ?? null
     );
 
     return { id, ...record };
@@ -178,6 +184,8 @@ interface RawRow {
   artifacts: string | null;
   session_delta: string | null;
   error: string | null;
+  budget_consumed: number | null;
+  budget_remaining: number | null;
 }
 
 function deserializeRow(row: RawRow): AuditRecord {
@@ -205,5 +213,7 @@ function deserializeRow(row: RawRow): AuditRecord {
       ? (JSON.parse(row.session_delta) as Record<string, unknown>)
       : undefined,
     error: row.error ?? undefined,
+    budgetConsumed: row.budget_consumed ?? undefined,
+    budgetRemaining: row.budget_remaining ?? undefined,
   };
 }

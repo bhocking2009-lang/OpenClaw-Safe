@@ -103,6 +103,14 @@ export class ArtifactStore {
     ).map(deserialize);
   }
 
+  listByType(type: ArtifactType): Artifact[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM artifacts WHERE type = ? ORDER BY created_at DESC')
+        .all(type) as RawArtifact[]
+    ).map(deserialize);
+  }
+
   listAll(): Artifact[] {
     return (
       this.db

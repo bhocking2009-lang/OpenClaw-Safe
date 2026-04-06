@@ -213,6 +213,10 @@ export class Gateway {
     });
 
     // ----- Sessions -----
+    r.get('/sessions', (_req, res) => {
+      res.json({ sessions: this.deps.sessionStore.listSessions() });
+    });
+
     r.post('/sessions', (req, res) => {
       const body = req.body as {
         principalId: string;
@@ -418,6 +422,8 @@ export class Gateway {
       const bundle = {
         sessionId: req.params.id,
         exportedAt: new Date().toISOString(),
+        budgetRemaining: session.budget,
+        budgetExhaustedCount: pack.manifest.budgetExhaustedCount,
         replayPack: pack,
         summary: formatReplaySummary(pack),
         integrityReport: integrityResult,
@@ -515,6 +521,17 @@ export class Gateway {
       // Enforce delegation depth cap
       const childDepth = (parent.delegationDepth ?? 0) + 1;
       if (childDepth > MAX_DELEGATION_DEPTH) {
+        // Emit an audit event so delegation depth denials are traceable
+        const now = new Date().toISOString();
+        this.deps.auditLog.write({
+          sessionId: parent.sessionId,
+          taskId: parent.id,
+          principalId: parent.ownerId,
+          eventType: 'delegation.depth.exceeded',
+          startedAt: now,
+          finishedAt: now,
+          error: `Maximum delegation depth (${MAX_DELEGATION_DEPTH}) exceeded. Parent is already at depth ${parent.delegationDepth ?? 0}.`,
+        });
         res.status(400).json({
           error: `Maximum delegation depth (${MAX_DELEGATION_DEPTH}) exceeded. Parent is already at depth ${parent.delegationDepth ?? 0}.`,
         });
@@ -610,8 +627,18 @@ export class Gateway {
     });
 
     // ----- Artifacts -----
-    r.get('/artifacts', (_req, res) => {
-      const artifacts = this.deps.artifactStore ? this.deps.artifactStore.listAll() : [];
+    r.get('/artifacts', (req, res) => {
+      const q = req.query as Record<string, string | undefined>;
+      let artifacts;
+      if (q.invocationId && this.deps.artifactStore) {
+        artifacts = this.deps.artifactStore.listByInvocation(q.invocationId);
+      } else if (q.provenanceId && this.deps.artifactStore) {
+        artifacts = this.deps.artifactStore.listByProvenance(q.provenanceId);
+      } else if (q.type && this.deps.artifactStore) {
+        artifacts = this.deps.artifactStore.listByType(q.type as import('./types').ArtifactType);
+      } else {
+        artifacts = this.deps.artifactStore ? this.deps.artifactStore.listAll() : [];
+      }
       res.json({ artifacts });
     });
 

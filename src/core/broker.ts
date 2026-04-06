@@ -5,9 +5,11 @@
  * The broker enforces:
  *   1. Policy evaluation (is this call allowed?)
  *   2. Capability check (is this tool in the task's capability set?)
- *   3. Approval gating (is approval required and obtained?)
- *   4. Execution routing (dispatch to the correct worker)
- *   5. Audit emission
+ *   3. Budget exhaustion guard (session budget must be > 0)
+ *   4. Approval gating (is approval required and obtained?)
+ *   5. Execution routing (dispatch to the correct worker)
+ *   6. Budget decrement (deduct tokensUsed from session after execution)
+ *   7. Audit emission
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -25,6 +27,7 @@ import {
 import { PolicyEngine } from './policy';
 import { AuditLog } from './audit';
 import { ArtifactStore } from './artifacts';
+import { SessionStore } from './session';
 
 // ---------------------------------------------------------------------------
 // Worker interface
@@ -75,17 +78,20 @@ export class ToolBroker {
   private auditLog: AuditLog;
   private approvalResolver?: ApprovalResolver;
   private artifactStore?: ArtifactStore;
+  private sessionStore?: SessionStore;
 
   constructor(
     policyEngine: PolicyEngine,
     auditLog: AuditLog,
     approvalResolver?: ApprovalResolver,
-    artifactStore?: ArtifactStore
+    artifactStore?: ArtifactStore,
+    sessionStore?: SessionStore
   ) {
     this.policyEngine = policyEngine;
     this.auditLog = auditLog;
     this.approvalResolver = approvalResolver;
     this.artifactStore = artifactStore;
+    this.sessionStore = sessionStore;
   }
 
   // ---------------------------------------------------------------------------
@@ -152,6 +158,30 @@ export class ToolBroker {
       return {
         invocation,
         policyDecision: { mode: 'deny', reason: 'Tool not found', requiresApproval: false, auditRequired: true },
+        denied: true,
+        requiresApproval: false,
+      };
+    }
+
+    // Budget exhaustion guard: deny immediately if the session budget is at zero.
+    if (policyCtx.session.budget <= 0) {
+      const invocation = this.buildInvocation(request, schema.defaultRuntimeTarget, now, undefined, 'Session budget exhausted');
+      this.auditLog.write({
+        sessionId: request.sessionId,
+        taskId: request.taskId,
+        principalId: request.principalId,
+        eventType: 'budget.exhausted',
+        toolName: request.toolName,
+        params: request.params,
+        startedAt: now,
+        finishedAt: now,
+        error: 'Session budget exhausted',
+        budgetConsumed: 0,
+        budgetRemaining: 0,
+      });
+      return {
+        invocation,
+        policyDecision: { mode: 'deny', reason: 'Session budget exhausted', requiresApproval: false, auditRequired: true, matchedRuleId: 'budget-exhausted' },
         denied: true,
         requiresApproval: false,
       };
@@ -307,6 +337,15 @@ export class ToolBroker {
       }
     }
 
+    // Budget decrement: if the worker reported tokensUsed, deduct from session budget.
+    let budgetConsumed: number | undefined;
+    let budgetRemaining: number | undefined;
+    if (receipt?.tokensUsed !== undefined && this.sessionStore) {
+      budgetConsumed = receipt.tokensUsed;
+      const updated = this.sessionStore.decrementBudget(request.sessionId, budgetConsumed);
+      budgetRemaining = updated?.budget;
+    }
+
     // Emit tool.finished audit record
     if (decision.auditRequired) {
       this.auditLog.write({
@@ -326,6 +365,8 @@ export class ToolBroker {
         networkTraceSummary: receipt?.networkSummary,
         artifacts: receipt?.artifacts,
         error,
+        budgetConsumed,
+        budgetRemaining,
       });
     }
 

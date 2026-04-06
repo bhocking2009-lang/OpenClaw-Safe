@@ -30,6 +30,8 @@ export interface ReplayPackManifest {
   approvalCount: number;
   /** Wall-clock duration of the session in ms (last record − first record) */
   durationMs: number | null;
+  /** Number of budget.exhausted events recorded in this session */
+  budgetExhaustedCount: number;
 }
 
 export interface ReplayPack {
@@ -100,6 +102,10 @@ export function buildReplayPack(
     (r) => r.eventType === 'approval.requested' || r.eventType === 'approval.resolved'
   ).length;
 
+  const budgetExhaustedCount = auditRecords.filter(
+    (r) => r.eventType === 'budget.exhausted'
+  ).length;
+
   let durationMs: number | null = null;
   if (auditRecords.length >= 2) {
     const first = Date.parse(auditRecords[0].startedAt);
@@ -119,6 +125,7 @@ export function buildReplayPack(
     executionCount,
     approvalCount,
     durationMs,
+    budgetExhaustedCount,
   };
 
   return { manifest, auditRecords, artifacts };
@@ -129,14 +136,16 @@ export function buildReplayPack(
 // ---------------------------------------------------------------------------
 
 const EVENT_EMOJI: Record<string, string> = {
-  'tool.started':        '▶',
-  'tool.finished':       '✓',
-  'tool.error':          '✗',
-  'tool.denied':         '⛔',
-  'policy.denied':       '⛔',
-  'approval.requested':  '⏳',
-  'approval.resolved':   '✅',
-  'channel.ingest':      '📨',
+  'tool.started':             '▶',
+  'tool.finished':            '✓',
+  'tool.error':               '✗',
+  'tool.denied':              '⛔',
+  'policy.denied':            '⛔',
+  'budget.exhausted':         '💰',
+  'delegation.depth.exceeded':'🚫',
+  'approval.requested':       '⏳',
+  'approval.resolved':        '✅',
+  'channel.ingest':           '📨',
 };
 
 /**

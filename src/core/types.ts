@@ -271,6 +271,8 @@ export interface RuntimeReceipt {
   artifacts: ArtifactRef[];
   startedAt: string;
   finishedAt: string;
+  /** Tokens consumed by this invocation (optional, reported by the worker). */
+  tokensUsed?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +299,10 @@ export interface AuditRecord {
   artifacts?: ArtifactRef[];
   sessionDelta?: Record<string, unknown>;
   error?: string;
+  /** Tokens consumed by this tool invocation (from RuntimeReceipt). */
+  budgetConsumed?: number;
+  /** Session budget remaining after this invocation. */
+  budgetRemaining?: number;
 }
 
 // ---------------------------------------------------------------------------

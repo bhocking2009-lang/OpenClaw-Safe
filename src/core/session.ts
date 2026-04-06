@@ -119,6 +119,29 @@ export class SessionStore {
     ).map(deserializeSession);
   }
 
+  listSessions(): Session[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
+        .all() as RawSession[]
+    ).map(deserializeSession);
+  }
+
+  /**
+   * Atomically deduct `amount` tokens from the session budget.
+   * Budget never goes below zero.
+   * Returns the updated session, or undefined if the session does not exist.
+   */
+  decrementBudget(id: string, amount: number): Session | undefined {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE sessions SET budget = MAX(0, budget - ?), updated_at = ? WHERE id = ?`
+      )
+      .run(amount, now, id);
+    return this.getSession(id);
+  }
+
   updateSession(
     id: string,
     updates: Partial<Pick<Session, 'mode' | 'budget' | 'elevationState'>>

@@ -99,12 +99,13 @@ export function formatReplaySummary(pack: ReplayPack): string {
   lines.push(`  Records   : ${manifest.recordCount}`);
   lines.push(`  Tools     : ${manifest.toolsInvoked.join(', ') || '(none)'}`);
   lines.push(`  Principals: ${manifest.principalsInvolved.join(', ') || '(none)'}`);
-  lines.push(`  Stats     : ${manifest.executionCount} execution(s)  ·  ${manifest.denialCount} denial(s)  ·  ${manifest.approvalCount} approval event(s)`);
+  lines.push(`  Stats     : ${manifest.executionCount} execution(s)  ·  ${manifest.denialCount} denial(s)  ·  ${manifest.approvalCount} approval event(s)  ·  ${manifest.budgetExhaustedCount} budget-exhausted event(s)`);
   lines.push('');
 
   // ── Section 1: Decisions ─────────────────────────────────────────────────
   const denials = auditRecords.filter(
-    (r) => r.eventType === 'tool.denied' || r.eventType === 'policy.denied'
+    (r) => r.eventType === 'tool.denied' || r.eventType === 'policy.denied' ||
+           r.eventType === 'budget.exhausted' || r.eventType === 'delegation.depth.exceeded'
   );
 
   lines.push(section('Decisions'));
@@ -112,12 +113,18 @@ export function formatReplaySummary(pack: ReplayPack): string {
     lines.push(indent('(no denials recorded)'));
   } else {
     for (const r of denials) {
-      const reason  = r.policyDecision?.reason ?? 'unknown';
+      const isBudget = r.eventType === 'budget.exhausted';
+      const isDelegation = r.eventType === 'delegation.depth.exceeded';
+      const icon = isBudget ? '💰' : isDelegation ? '🚫' : '⛔';
+      const reason  = r.policyDecision?.reason ?? r.error ?? 'unknown';
       const ruleId  = r.policyDecision?.matchedRuleId ? ` [rule: ${r.policyDecision.matchedRuleId}]` : '';
       const tool    = r.toolName ? ` → ${r.toolName}` : '';
-      lines.push(indent(`${ts(r.startedAt)}  ⛔ ${r.eventType}${tool}`));
+      lines.push(indent(`${ts(r.startedAt)}  ${icon} ${r.eventType}${tool}`));
       lines.push(indent(`   reason : ${reason}${ruleId}`, 4));
       lines.push(indent(`   actor  : ${r.principalId}`, 4));
+      if (isBudget && r.budgetRemaining !== undefined) {
+        lines.push(indent(`   budget : remaining=${r.budgetRemaining}`, 4));
+      }
     }
   }
   lines.push('');
