@@ -16,6 +16,7 @@ const VALID_MANIFEST = {
   packageHash: 'sha256:abc123def456',
   pinnedVersion: '1.0.0',
   installedAt: new Date().toISOString(),
+  riskClass: 'C' as const,
 };
 
 describe('PluginRegistry', () => {

@@ -340,6 +340,9 @@ export interface OutboundEnvelope {
 // Plugin manifest
 // ---------------------------------------------------------------------------
 
+/** Lifecycle state of an installed plugin. */
+export type PluginState = 'installed' | 'enabled' | 'disabled';
+
 export interface PluginManifest {
   id: string;
   name: string;
@@ -358,6 +361,10 @@ export interface PluginManifest {
   pinnedVersion: string;
   installedAt: string;
   reviewedAt?: string;
+  /** Risk class for broker-mediated capability enforcement */
+  riskClass: ToolRiskClass;
+  /** Current lifecycle state */
+  state: PluginState;
 }
 
 // ---------------------------------------------------------------------------

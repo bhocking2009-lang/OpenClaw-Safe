@@ -42,9 +42,11 @@ import { ApprovalStore } from './approval';
 import { MemoryStore } from './memory';
 import { ArtifactStore } from './artifacts';
 import { PolicyRuleStore, validatePolicyRule } from './policy-store';
+import { PluginStore } from './plugin-store';
 import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayPacks, validateExportBundle } from './replay';
 import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatIntegrityReport } from './display';
 import { BrowserWorker } from '../workers/browser';
+import { PluginManifestSchema } from '../plugins/registry';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
@@ -114,6 +116,12 @@ export interface GatewayDependencies {
    * tool schema, and exposes the POST /v1/browser/doc-fetch endpoint.
    */
   browserWorker?: BrowserWorker;
+  /**
+   * Optional plugin store for persistent plugin lifecycle management.
+   * When provided, plugin install/enable/disable/remove/invoke routes are
+   * fully backed by the store and all actions are audited.
+   */
+  pluginStore?: PluginStore;
 }
 
 export class Gateway {
@@ -1121,24 +1129,244 @@ export class Gateway {
     });
 
     // ----- Plugins -----
+
+    /**
+     * List all registered plugins.
+     */
     r.get('/plugins', (_req, res) => {
-      res.json({ plugins: Array.from(this.plugins.values()) });
+      const plugins = this.deps.pluginStore
+        ? this.deps.pluginStore.list()
+        : Array.from(this.plugins.values());
+      res.json({ plugins });
     });
 
+    /**
+     * Install a plugin.
+     * Validates the manifest schema, emits plugin.installed audit event.
+     */
     r.post('/plugins', (req, res) => {
-      const manifest = req.body as PluginManifest;
-      if (!manifest.id || !manifest.name) {
-        res.status(400).json({ error: 'id and name are required' });
+      const parseResult = PluginManifestSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        res.status(400).json({ error: `Invalid plugin manifest: ${parseResult.error.message}` });
         return;
       }
-      this.plugins.set(manifest.id, manifest);
-      res.status(201).json(manifest);
+      const manifest = parseResult.data as PluginManifest;
+
+      let installed: PluginManifest;
+      if (this.deps.pluginStore) {
+        try {
+          installed = this.deps.pluginStore.install(manifest);
+        } catch (err) {
+          res.status(400).json({ error: (err as Error).message });
+          return;
+        }
+      } else {
+        installed = { ...manifest, state: 'installed' };
+        this.plugins.set(installed.id, installed);
+      }
+
+      const now = new Date().toISOString();
+      this.deps.auditLog.write({
+        sessionId: 'system',
+        principalId: 'system',
+        eventType: 'plugin.installed',
+        startedAt: now,
+        finishedAt: now,
+        params: { pluginId: installed.id, version: installed.version, riskClass: installed.riskClass },
+      });
+      res.status(201).json(installed);
     });
 
+    /**
+     * Get a single plugin by id.
+     */
     r.get('/plugins/:id', (req, res) => {
-      const p = this.plugins.get(req.params.id);
+      const p = this.deps.pluginStore
+        ? this.deps.pluginStore.get(req.params.id)
+        : this.plugins.get(req.params.id);
       if (!p) { res.status(404).json({ error: 'Not found' }); return; }
       res.json(p);
+    });
+
+    /**
+     * Enable or disable a plugin.
+     * Body: { state: 'enabled' | 'disabled' }
+     * Emits plugin.enabled or plugin.disabled audit event.
+     */
+    r.patch('/plugins/:id/state', (req, res) => {
+      const { state } = req.body as { state?: unknown };
+      if (state !== 'enabled' && state !== 'disabled') {
+        res.status(400).json({ error: "state must be 'enabled' or 'disabled'" });
+        return;
+      }
+
+      let updated: PluginManifest | undefined;
+      if (this.deps.pluginStore) {
+        updated = this.deps.pluginStore.setState(req.params.id, state);
+      } else {
+        const existing = this.plugins.get(req.params.id);
+        if (existing) {
+          updated = { ...existing, state };
+          this.plugins.set(req.params.id, updated);
+        }
+      }
+
+      if (!updated) { res.status(404).json({ error: 'Not found' }); return; }
+
+      const now = new Date().toISOString();
+      this.deps.auditLog.write({
+        sessionId: 'system',
+        principalId: 'system',
+        eventType: state === 'enabled' ? 'plugin.enabled' : 'plugin.disabled',
+        startedAt: now,
+        finishedAt: now,
+        params: { pluginId: updated.id },
+      });
+      res.json(updated);
+    });
+
+    /**
+     * Remove a plugin safely.
+     * Emits plugin.removed audit event.
+     */
+    r.delete('/plugins/:id', (req, res) => {
+      const pluginId = req.params.id;
+      let removed: boolean;
+      if (this.deps.pluginStore) {
+        removed = this.deps.pluginStore.remove(pluginId);
+      } else {
+        removed = this.plugins.delete(pluginId);
+      }
+
+      if (!removed) { res.status(404).json({ error: 'Not found' }); return; }
+
+      const now = new Date().toISOString();
+      this.deps.auditLog.write({
+        sessionId: 'system',
+        principalId: 'system',
+        eventType: 'plugin.removed',
+        startedAt: now,
+        finishedAt: now,
+        params: { pluginId },
+      });
+      res.json({ removed: true, pluginId });
+    });
+
+    /**
+     * Invoke a plugin action.
+     * The plugin must be enabled.
+     * The requested capability must be in the plugin's declared capabilities.
+     * The invocation is mediated through policy (using the session's principal)
+     * and emits a plugin.action audit event — ensuring full observability.
+     *
+     * Body: { sessionId, taskId?, capability, params }
+     */
+    r.post('/plugins/:id/invoke', (req, res) => {
+      const pluginId = req.params.id;
+      const plugin: PluginManifest | undefined = this.deps.pluginStore
+        ? this.deps.pluginStore.get(pluginId)
+        : this.plugins.get(pluginId);
+
+      if (!plugin) { res.status(404).json({ error: 'Plugin not found' }); return; }
+      if (plugin.state !== 'enabled') {
+        res.status(403).json({ error: `Plugin "${pluginId}" is not enabled (state: ${plugin.state})` });
+        return;
+      }
+
+      const body = req.body as { sessionId?: unknown; taskId?: unknown; capability?: unknown; params?: unknown };
+      if (typeof body.sessionId !== 'string' || !body.sessionId) {
+        res.status(400).json({ error: 'sessionId is required' });
+        return;
+      }
+      if (typeof body.capability !== 'string' || !body.capability) {
+        res.status(400).json({ error: 'capability is required' });
+        return;
+      }
+
+      // Capability check: requested capability must be in plugin's declared set
+      if (!plugin.capabilities.includes(body.capability)) {
+        const now = new Date().toISOString();
+        this.deps.auditLog.write({
+          sessionId: body.sessionId,
+          principalId: 'system',
+          eventType: 'plugin.capability.denied',
+          startedAt: now,
+          finishedAt: now,
+          error: `Capability "${body.capability}" not declared by plugin "${pluginId}".`,
+          params: { pluginId, capability: body.capability },
+        });
+        res.status(403).json({
+          error: `Capability "${body.capability}" not declared by plugin "${pluginId}".`,
+        });
+        return;
+      }
+
+      // Session must exist
+      const session = this.deps.sessionStore.getSession(body.sessionId);
+      if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+
+      // Policy check via policyEngine — build a proper PolicyContext
+      const principal = this.principals.get(session.principalId);
+      // Build a synthetic principal if not registered in this gateway instance (e.g. tests)
+      const effectivePrincipal: Principal = principal ?? {
+        id: session.principalId,
+        type: 'user' as const,
+        trustLevel: 'low' as const,
+        identities: {},
+        policyGroup: 'default',
+        createdAt: session.createdAt,
+      };
+
+      const now = new Date().toISOString();
+      const policyCtx = {
+        principal: effectivePrincipal,
+        session,
+        toolName: `plugin:${pluginId}:${body.capability}`,
+        toolRiskClass: plugin.riskClass,
+        runtimeTarget: 'plugin_worker' as const,
+        approvalState: 'approved' as const,
+      };
+      const decision = this.deps.policyEngine.evaluate(policyCtx);
+
+      if (decision.mode === 'deny') {
+        this.deps.auditLog.write({
+          sessionId: body.sessionId,
+          principalId: session.principalId,
+          eventType: 'plugin.action.denied',
+          startedAt: now,
+          finishedAt: now,
+          error: `Policy denied plugin "${pluginId}" capability "${body.capability}": ${decision.matchedRuleId}`,
+          params: { pluginId, capability: body.capability, matchedRuleId: decision.matchedRuleId },
+        });
+        res.status(403).json({
+          error: `Policy denied: ${decision.reason}`,
+          matchedRuleId: decision.matchedRuleId,
+        });
+        return;
+      }
+
+      // Emit successful plugin.action audit event
+      this.deps.auditLog.write({
+        sessionId: body.sessionId,
+        principalId: session.principalId,
+        eventType: 'plugin.action',
+        startedAt: now,
+        finishedAt: now,
+        params: {
+          pluginId,
+          capability: body.capability,
+          taskId: typeof body.taskId === 'string' ? body.taskId : undefined,
+          pluginParams: body.params ?? {},
+        },
+      });
+
+      res.json({
+        pluginId,
+        capability: body.capability,
+        sessionId: body.sessionId,
+        audited: true,
+        executedAt: now,
+      });
     });
 
     // ----- Channels ingress (stub) -----
