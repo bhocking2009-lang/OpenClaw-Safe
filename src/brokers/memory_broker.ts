@@ -16,6 +16,8 @@ export class MemoryBroker {
   constructor(private readonly auditLog?: AuditLog) {}
 
   execute(args: Record<string, unknown>, actorId: string): MemoryBrokerResult {
+    // TODO: emit audit event via this.auditLog when audit integration is added
+    void actorId;
     const operation = (args["operation"] as string) ?? "get";
     const key = args["key"] as string | undefined;
 

@@ -16,6 +16,8 @@ export class FileBroker {
     args: Record<string, unknown>,
     actorId: string
   ): FileBrokerResult {
+    // TODO: emit audit event via this.auditLog when audit integration is added
+    void actorId;
     const operation = (args["operation"] as string) ?? "read";
     const path = (args["path"] as string) ?? "";
     const content = args["content"];

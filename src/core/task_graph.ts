@@ -80,6 +80,10 @@ export class TaskGraph {
       }
     }
 
+    if (result.length !== allNodes.length) {
+      throw new Error("TaskGraph: cycle detected – topological ordering is not possible.");
+    }
+
     return result;
   }
 }

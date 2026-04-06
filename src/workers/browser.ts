@@ -99,7 +99,7 @@ export class BrowserWorker {
     try {
       parsedUrl = new URL(url);
     } catch {
-      this.deny("browser.url.denied", url, actorId, `Invalid URL: ${url}`);
+      return this.deny("browser.url.denied", url, actorId, `Invalid URL: ${url}`);
     }
 
     if (!allowedProtocols.includes(parsedUrl.protocol)) {
@@ -159,8 +159,7 @@ export class BrowserWorker {
     try {
       body = await response.text();
     } catch (err) {
-      this.deny("browser.network.error", url, actorId, `Failed to read response body: ${String(err)}`);
-      throw new Error("unreachable");
+      return this.deny("browser.network.error", url, actorId, `Failed to read response body: ${String(err)}`);
     }
 
     if (Buffer.byteLength(body, "utf8") > maxBodyBytes) {

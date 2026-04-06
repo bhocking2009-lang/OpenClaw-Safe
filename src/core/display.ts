@@ -24,7 +24,7 @@ export function formatReplayDiff(before: ExportManifest, after: ExportManifest):
 
 export function formatPolicyExplanation(evaluation: PolicyEvaluation): string {
   const lines: string[] = [
-    `Policy explanation for '${evaluation.toolName}': decision=${evaluation.decision}, risk=${evaluation.riskLevel}, rule=${evaluation.matchedRuleId ?? "unknown"}`,
+    `Policy explanation for '${evaluation.toolName}': decision=${evaluation.decision}, risk=${evaluation.riskLevel}, rule=${evaluation.matchedRuleId}`,
     `  Reason: ${evaluation.reason}`,
   ];
   if (evaluation.evaluationTrace && evaluation.evaluationTrace.length > 0) {

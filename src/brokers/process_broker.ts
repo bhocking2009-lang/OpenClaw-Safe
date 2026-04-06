@@ -21,7 +21,9 @@ export class ProcessBroker {
     const command = (args["command"] as string) ?? "";
     const cmdArgs = (args["args"] as string[]) ?? [];
 
-    // Simulation only – no real process spawning in the broker layer
+    // Simulation only – no real process spawning in the broker layer.
+    // TODO: emit audit event via this.auditLog when audit integration is added.
+    void actorId;
     return {
       command,
       args: cmdArgs,
