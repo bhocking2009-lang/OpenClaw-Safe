@@ -49,6 +49,9 @@ import { BrowserWorker } from '../workers/browser';
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
 
+/** Maximum number of direct child tasks a single parent task may spawn. */
+export const MAX_CHILDREN_PER_TASK = 20;
+
 // ---------------------------------------------------------------------------
 // Phase 7 — browser_doc_fetch tool schema
 // ---------------------------------------------------------------------------
@@ -541,6 +544,7 @@ export class Gateway {
      * The child's capabilitySet is strictly the intersection of the parent's
      * capabilitySet and the requested capabilities — it can never be broader.
      * Delegation depth is capped at MAX_DELEGATION_DEPTH.
+     * Child count per parent is capped at MAX_CHILDREN_PER_TASK.
      * An optional budgetCap limits the token budget consumed by this child.
      */
     r.post('/tasks/:id/delegate', (req, res) => {
@@ -564,11 +568,12 @@ export class Gateway {
         return;
       }
 
+      const now = new Date().toISOString();
+
       // Enforce delegation depth cap
       const childDepth = (parent.delegationDepth ?? 0) + 1;
       if (childDepth > MAX_DELEGATION_DEPTH) {
         // Emit an audit event so delegation depth denials are traceable
-        const now = new Date().toISOString();
         this.deps.auditLog.write({
           sessionId: parent.sessionId,
           taskId: parent.id,
@@ -584,6 +589,51 @@ export class Gateway {
         return;
       }
 
+      // Enforce child count cap
+      const currentChildCount = this.deps.sessionStore.countChildTasks(parent.id);
+      if (currentChildCount >= MAX_CHILDREN_PER_TASK) {
+        this.deps.auditLog.write({
+          sessionId: parent.sessionId,
+          taskId: parent.id,
+          principalId: parent.ownerId,
+          eventType: 'delegation.children.exceeded',
+          startedAt: now,
+          finishedAt: now,
+          error: `Maximum child task count (${MAX_CHILDREN_PER_TASK}) exceeded for task ${parent.id}.`,
+        });
+        res.status(400).json({
+          error: `Maximum child task count (${MAX_CHILDREN_PER_TASK}) exceeded for task ${parent.id}.`,
+        });
+        return;
+      }
+
+      // Loop detection: the new child cannot have the parent (or any ancestor) as a
+      // descendant.  Since we are creating a *new* task, it has no descendants yet,
+      // so we only need to verify the parent itself is not about to create a cycle
+      // (which cannot happen with new tasks, but we guard against a caller passing
+      // an existing task ID as the title by checking ancestor chain for parent.id).
+      // More precisely: walk upward from parent and ensure parent.id does not appear
+      // in its own ancestor chain (sanity guard — the DB schema prevents this by
+      // construction, but we keep the check explicit and auditable).
+      let ancestorId: string | undefined = parent.parentTaskId;
+      while (ancestorId !== undefined) {
+        if (ancestorId === parent.id) {
+          this.deps.auditLog.write({
+            sessionId: parent.sessionId,
+            taskId: parent.id,
+            principalId: parent.ownerId,
+            eventType: 'delegation.loop.detected',
+            startedAt: now,
+            finishedAt: now,
+            error: `Delegation loop detected for task ${parent.id}.`,
+          });
+          res.status(400).json({ error: `Delegation loop detected for task ${parent.id}.` });
+          return;
+        }
+        const ancestor = this.deps.sessionStore.getTask(ancestorId);
+        ancestorId = ancestor?.parentTaskId;
+      }
+
       // Enforce intersection: child cannot exceed parent capabilities
       const requested = body.requestedCapabilities as string[];
       const disallowed = requested.filter((c) => !parent.capabilitySet.includes(c));
@@ -594,6 +644,9 @@ export class Gateway {
         return;
       }
 
+      // Track which capabilities were restricted (parent has but child did not request)
+      const restricted = parent.capabilitySet.filter((c) => !requested.includes(c));
+
       // Validate optional budgetCap
       let budgetCap: number | undefined;
       if (body.budgetCap !== undefined) {
@@ -602,6 +655,27 @@ export class Gateway {
           return;
         }
         budgetCap = body.budgetCap;
+
+        // Budget partition enforcement: total child budgetCaps must not exceed parent budgetCap.
+        if (parent.budgetCap !== undefined) {
+          const siblings = this.deps.sessionStore.listChildTasks(parent.id);
+          const allocatedToSiblings = siblings.reduce((sum, t) => sum + (t.budgetCap ?? 0), 0);
+          if (allocatedToSiblings + budgetCap > parent.budgetCap) {
+            this.deps.auditLog.write({
+              sessionId: parent.sessionId,
+              taskId: parent.id,
+              principalId: parent.ownerId,
+              eventType: 'delegation.budget.exceeded',
+              startedAt: now,
+              finishedAt: now,
+              error: `Budget partition exceeded: parent budgetCap=${parent.budgetCap}, already allocated=${allocatedToSiblings}, requested=${budgetCap}.`,
+            });
+            res.status(400).json({
+              error: `Budget partition exceeded: parent budgetCap=${parent.budgetCap}, already allocated=${allocatedToSiblings}, requested=${budgetCap}.`,
+            });
+            return;
+          }
+        }
       }
 
       const childTask = this.deps.sessionStore.createTask({
@@ -616,8 +690,92 @@ export class Gateway {
         budgetCap,
       });
 
+      // Emit budget allocation audit event when a budgetCap is set
+      if (budgetCap !== undefined) {
+        this.deps.auditLog.write({
+          sessionId: parent.sessionId,
+          taskId: childTask.id,
+          principalId: parent.ownerId,
+          eventType: 'delegation.budget.allocated',
+          startedAt: now,
+          finishedAt: now,
+          sessionDelta: { parentTaskId: parent.id, budgetCap },
+        });
+      }
+
+      // Emit capability restriction audit event when child gets fewer capabilities than parent
+      if (restricted.length > 0) {
+        this.deps.auditLog.write({
+          sessionId: parent.sessionId,
+          taskId: childTask.id,
+          principalId: parent.ownerId,
+          eventType: 'delegation.capability.restricted',
+          startedAt: now,
+          finishedAt: now,
+          sessionDelta: {
+            parentTaskId: parent.id,
+            inherited: requested,
+            restricted,
+          },
+        });
+      }
+
       this.emitEvent({ type: 'task.updated', payload: { task: childTask }, emittedAt: new Date().toISOString() });
       res.status(201).json({ childTask });
+    });
+
+    /**
+     * Cancel a task and all of its descendants recursively.
+     * Emits a task.cancelled audit event for each task cancelled.
+     * Tasks already in a terminal state (completed/failed/cancelled) are skipped.
+     */
+    r.post('/tasks/:id/cancel', (req, res) => {
+      const root = this.deps.sessionStore.getTask(req.params.id);
+      if (!root) { res.status(404).json({ error: 'Task not found' }); return; }
+
+      const cancelled: Task[] = [];
+      const now = new Date().toISOString();
+
+      const cancelSubtree = (taskId: string): void => {
+        const task = this.deps.sessionStore.getTask(taskId);
+        if (!task) return;
+        // Skip already-terminal tasks
+        if (task.state === 'completed' || task.state === 'failed' || task.state === 'cancelled') {
+          // Still recurse to children — they may be in non-terminal states
+        } else {
+          const updated = this.deps.sessionStore.updateTaskState(task.id, 'cancelled');
+          if (updated) {
+            cancelled.push(updated);
+            this.deps.auditLog.write({
+              sessionId: task.sessionId,
+              taskId: task.id,
+              principalId: task.ownerId,
+              eventType: 'task.cancelled',
+              startedAt: now,
+              finishedAt: now,
+              sessionDelta: { cancelledBy: req.params.id },
+            });
+            this.emitEvent({ type: 'task.updated', payload: { task: updated }, emittedAt: now });
+          }
+        }
+        // Recurse into children regardless of parent terminal state
+        const children = this.deps.sessionStore.listChildTasks(taskId);
+        for (const child of children) {
+          cancelSubtree(child.id);
+        }
+      };
+
+      cancelSubtree(root.id);
+      res.json({ cancelled });
+    });
+
+    /**
+     * Return the full delegation subtree rooted at the given task.
+     */
+    r.get('/tasks/:id/tree', (req, res) => {
+      const tree = this.deps.sessionStore.getDelegationTree(req.params.id);
+      if (!tree) { res.status(404).json({ error: 'Task not found' }); return; }
+      res.json({ tree });
     });
 
     // ----- Approvals -----

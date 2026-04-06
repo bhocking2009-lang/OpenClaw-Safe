@@ -9,6 +9,14 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { Session, Task, SessionMode, TaskState } from './types';
 
+/**
+ * A node in the delegation tree returned by getDelegationTree().
+ */
+export interface DelegationTreeNode {
+  task: Task;
+  children: DelegationTreeNode[];
+}
+
 export interface SessionStoreOptions {
   dbPath: string;
 }
@@ -260,6 +268,43 @@ export class SessionStore {
         .prepare('SELECT * FROM tasks WHERE state = ? ORDER BY created_at ASC')
         .all(state) as RawTask[]
     ).map(deserializeTask);
+  }
+
+  /**
+   * List direct child tasks of the given parent task.
+   */
+  listChildTasks(parentTaskId: string): Task[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at ASC')
+        .all(parentTaskId) as RawTask[]
+    ).map(deserializeTask);
+  }
+
+  /**
+   * Count the number of direct children of a task (including any state).
+   */
+  countChildTasks(parentTaskId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) as cnt FROM tasks WHERE parent_task_id = ?')
+      .get(parentTaskId) as { cnt: number };
+    return row.cnt;
+  }
+
+  /**
+   * Return the full delegation subtree rooted at `taskId`.
+   * The root task itself is included at depth 0.
+   * Children are populated recursively.
+   */
+  getDelegationTree(taskId: string): DelegationTreeNode | undefined {
+    const root = this.getTask(taskId);
+    if (!root) return undefined;
+    return this.buildTreeNode(root);
+  }
+
+  private buildTreeNode(task: Task): DelegationTreeNode {
+    const children = this.listChildTasks(task.id).map((c) => this.buildTreeNode(c));
+    return { task, children };
   }
 
   updateTaskState(id: string, state: TaskState, executorId?: string): Task | undefined {
