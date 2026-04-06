@@ -370,10 +370,11 @@ export class Gateway {
       const session = this.deps.sessionStore.getSession(req.params.id);
       if (!session) { res.status(404).json({ error: 'Not found' }); return; }
       const pack = buildReplayPack(req.params.id, this.deps.auditLog, this.deps.artifactStore);
+      const safeId = req.params.id.replace(/[^a-zA-Z0-9-]/g, '_');
       res
         .type('text/plain; charset=utf-8')
         .set('X-Content-Type-Options', 'nosniff')
-        .set('Content-Disposition', `attachment; filename="session-summary-${req.params.id}.txt"`)
+        .set('Content-Disposition', `attachment; filename="session-summary-${safeId}.txt"`)
         .send(formatReplaySummary(pack));
     });
 
