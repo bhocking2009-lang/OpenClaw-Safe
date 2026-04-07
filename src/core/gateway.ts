@@ -47,6 +47,7 @@ import { buildReplayPack, formatExecutionTrace, checkAuditIntegrity, diffReplayP
 import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatIntegrityReport } from './display';
 import { BrowserWorker } from '../workers/browser';
 import { PluginManifestSchema } from '../plugins/registry';
+import { createBeeOSRouter } from '../ui/beeos';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
@@ -159,8 +160,8 @@ export class Gateway {
 
     // Authentication middleware
     this.app.use((req: Request, res: Response, next: NextFunction) => {
-      // Skip auth for health checks
-      if (req.path === '/health') return next();
+      // Skip auth for health checks and BeeOS UI
+      if (req.path === '/health' || req.path.startsWith('/ui')) return next();
 
       // If no gateway secret is configured, allow all requests
       if (!this.config.gatewaySecret) return next();
@@ -1388,6 +1389,9 @@ export class Gateway {
     });
 
     this.app.use('/v1', r);
+
+    // BeeOS operator UI (mounted outside /v1, auth-exempt HTML shell)
+    this.app.use('/ui', createBeeOSRouter());
   }
 
   // ---------------------------------------------------------------------------
