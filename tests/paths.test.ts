@@ -31,6 +31,12 @@ beforeEach(() => {
   _resetPathsCache();
 });
 
+/** Subdirectory keys whose values should all be under `base`. */
+const SUBDIR_KEYS = ['logs', 'artifacts', 'replay', 'plugins'] as const;
+
+/** All expected keys on the AppPaths object. */
+const ALL_PATH_KEYS: (keyof AppPaths)[] = ['base', 'data', 'logs', 'artifacts', 'replay', 'plugins', 'db'];
+
 // ---------------------------------------------------------------------------
 // getAppPaths — shape
 // ---------------------------------------------------------------------------
@@ -38,8 +44,7 @@ beforeEach(() => {
 describe('getAppPaths() — shape', () => {
   it('returns an object with all required keys', () => {
     const paths = getAppPaths();
-    const keys: (keyof AppPaths)[] = ['base', 'data', 'logs', 'artifacts', 'replay', 'plugins', 'db'];
-    for (const key of keys) {
+    for (const key of ALL_PATH_KEYS) {
       expect(paths).toHaveProperty(key);
       expect(typeof paths[key]).toBe('string');
     }
@@ -64,7 +69,7 @@ describe('getAppPaths() — shape', () => {
 
   it('logs, artifacts, replay, plugins are inside base', () => {
     const paths = getAppPaths();
-    for (const key of ['logs', 'artifacts', 'replay', 'plugins'] as const) {
+    for (const key of SUBDIR_KEYS) {
       expect(paths[key].startsWith(paths.base)).toBe(true);
     }
   });
@@ -77,11 +82,11 @@ describe('getAppPaths() — shape', () => {
 describe('getAppPaths() — Windows platform', () => {
   it('base is under APPDATA when process.platform is win32', () => {
     const restore = setPlatform('win32');
-    const fakeAppData = path.join(os.homedir(), 'FakeAppData', 'Roaming');
-    process.env['APPDATA'] = fakeAppData;
+    const testAppDataPath = path.join(os.homedir(), 'FakeAppData', 'Roaming');
+    process.env['APPDATA'] = testAppDataPath;
     try {
       const paths = getAppPaths();
-      expect(paths.base).toBe(path.join(fakeAppData, 'OpenClaw-Safe'));
+      expect(paths.base).toBe(path.join(testAppDataPath, 'OpenClaw-Safe'));
     } finally {
       restore();
       delete process.env['APPDATA'];
@@ -178,7 +183,7 @@ describe('ensureAppPaths()', () => {
 
     try {
       const paths = ensureAppPaths();
-      const keys: (keyof AppPaths)[] = ['base', 'data', 'logs', 'artifacts', 'replay', 'plugins', 'db'];
+      const keys: (keyof AppPaths)[] = ALL_PATH_KEYS;
       for (const key of keys) {
         expect(paths).toHaveProperty(key);
       }
