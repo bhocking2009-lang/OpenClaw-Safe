@@ -2,6 +2,31 @@
 
 A local-first agent operating system with a policy broker, sandbox-first execution, durable tasks, and verifiable tool use.
 
+## Getting Started
+
+### Windows Installer (Recommended for end users)
+
+1. Download `OpenClaw-Safe-Setup.exe` from the [Releases](../../releases) page.
+2. Run the installer — it installs to `Program Files\OpenClaw Safe\`.
+3. Launch from the Start Menu or Desktop shortcut.
+4. The app starts a local gateway and opens your browser to `http://127.0.0.1:4242`.
+
+**No Node.js installation required.**
+
+Runtime data is stored in `%APPDATA%\OpenClaw-Safe\` (never inside Program Files).
+
+### Developer Mode
+
+```bash
+npm install
+npm run build
+npm start
+# or
+npx openclaw start
+```
+
+Gateway starts at `http://127.0.0.1:4242`. BeeOS operator UI at `http://127.0.0.1:4242/ui`.
+
 ## Implementation Status
 
 | Phase | Scope | Status |
