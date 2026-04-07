@@ -11,8 +11,8 @@
 
 import { Command } from 'commander';
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
+import { getAppPaths, ensureAppPaths } from '../core/paths';
 
 // We do a lazy import of the gateway stack to avoid loading SQLite
 // unless the command actually needs it.
@@ -35,7 +35,7 @@ async function buildGateway(dbPath: string) {
   return { policyEngine, broker, auditLog, sessionStore, approvalStore, memoryStore, Gateway };
 }
 
-const DEFAULT_DB = path.join(os.homedir(), '.openclaw', 'gateway.db');
+const DEFAULT_DB = getAppPaths().db;
 
 export function createCLI(): Command {
   const program = new Command();
@@ -56,8 +56,14 @@ export function createCLI(): Command {
     .option('--db <path>', 'Database path', DEFAULT_DB)
     .option('--secret <secret>', 'Gateway shared secret', '')
     .action(async (opts: { port: string; host: string; db: string; secret: string }) => {
-      const dbDir = path.dirname(opts.db);
-      fs.mkdirSync(dbDir, { recursive: true });
+      // If using the default DB, ensure all app directories exist.
+      // If using a custom --db path, just ensure its parent directory exists.
+      if (opts.db === DEFAULT_DB) {
+        ensureAppPaths();
+      } else {
+        const dbDir = path.dirname(opts.db);
+        fs.mkdirSync(dbDir, { recursive: true });
+      }
 
       const { policyEngine, broker, auditLog, sessionStore, approvalStore, memoryStore, Gateway } =
         await buildGateway(opts.db);
