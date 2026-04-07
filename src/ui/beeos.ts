@@ -473,7 +473,7 @@ async function renderReplay(sessionId) {
   html += '<div class="view-title">REPLAY VIEWER</div>';
   html += '<div class="view-actions">';
   html += '<span class="tag ' + (valid ? 'tag-ok' : 'tag-err') + '">' + (valid ? 'INTEGRITY OK' : 'INTEGRITY FAIL') + '</span>';
-  html += '<button onclick="location.hash=\'#sessions\'">BACK</button>';
+  html += '<button onclick="location.hash=\\'#sessions\\'">BACK</button>';
   html += '</div></div>';
 
   // Session info bar
