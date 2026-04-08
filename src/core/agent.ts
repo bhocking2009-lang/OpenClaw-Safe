@@ -55,6 +55,14 @@ export interface ModelResponse {
 
 export interface ModelProvider {
   name: string;
+  /** The specific model identifier used by this provider (e.g. "llama3.2"). */
+  model?: string;
+  /**
+   * Optional reachability probe. Called at startup by the gateway to verify
+   * the provider is available. Returns true if reachable, false otherwise.
+   * Providers that do not implement probe() are assumed always available.
+   */
+  probe?(): Promise<boolean>;
   invoke(
     messages: ModelMessage[],
     tools: ToolSchema[],
@@ -156,8 +164,54 @@ export class AgentRuntime {
 
     while (rounds < maxRounds) {
       rounds++;
-      const response = await modelProvider.invoke(currentMessages, visibleTools, {
-        maxTokens: Math.min(session.budget, 4096),
+
+      // Emit model.request before each inference call
+      const requestedAt = new Date().toISOString();
+      this.emit({
+        type: 'model.request',
+        payload: {
+          provider: modelProvider.name,
+          model: modelProvider.model ?? 'unknown',
+          round: rounds,
+          messageCount: currentMessages.length,
+          toolCount: visibleTools.length,
+        },
+        emittedAt: requestedAt,
+      });
+
+      let response: ModelResponse;
+      try {
+        response = await modelProvider.invoke(currentMessages, visibleTools, {
+          maxTokens: Math.min(session.budget, 4096),
+        });
+      } catch (err) {
+        // Emit model.error so the operator can see failure in replay/BeeOS
+        this.emit({
+          type: 'model.error',
+          payload: {
+            provider: modelProvider.name,
+            model: modelProvider.model ?? 'unknown',
+            round: rounds,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          emittedAt: new Date().toISOString(),
+        });
+        throw err;
+      }
+
+      // Emit model.response on success
+      this.emit({
+        type: 'model.response',
+        payload: {
+          provider: modelProvider.name,
+          model: modelProvider.model ?? 'unknown',
+          round: rounds,
+          contentLength: response.content.length,
+          toolCallCount: response.toolCalls?.length ?? 0,
+          promptTokens: response.usage?.promptTokens,
+          completionTokens: response.usage?.completionTokens,
+        },
+        emittedAt: new Date().toISOString(),
       });
 
       if (response.usage) {
@@ -182,6 +236,18 @@ export class AgentRuntime {
       // Dispatch tool calls
       const toolResultMessages: ModelMessage[] = [];
       for (const toolCall of response.toolCalls) {
+        // Emit model.tool.request so the operator can see what the model asked for
+        this.emit({
+          type: 'model.tool.request',
+          payload: {
+            provider: modelProvider.name,
+            model: modelProvider.model ?? 'unknown',
+            toolName: toolCall.name,
+            toolCallId: toolCall.id,
+          },
+          emittedAt: new Date().toISOString(),
+        });
+
         const request: ToolRequest = {
           id: uuidv4(),
           sessionId: session.id,

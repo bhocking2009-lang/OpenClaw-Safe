@@ -113,6 +113,17 @@ export interface Task {
    * cannot exceed this value (enforced at delegation time).
    */
   budgetCap?: number;
+  /**
+   * The model provider bound to this task (e.g. "ollama").
+   * Set explicitly at delegation time; never inferred by the child.
+   * Carried through replay/export for full auditability.
+   */
+  providerName?: string;
+  /**
+   * The specific model bound to this task (e.g. "llama3.2").
+   * Must be a model available on the named provider.
+   */
+  modelName?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -307,6 +318,10 @@ export interface AuditRecord {
   budgetConsumed?: number;
   /** Session budget remaining after this invocation. */
   budgetRemaining?: number;
+  /** Model provider name for model lifecycle events (e.g. "ollama"). */
+  modelProvider?: string;
+  /** Model name for model lifecycle events (e.g. "llama3.2"). */
+  modelName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +395,12 @@ export type GatewayEventType =
   | 'tool.finished'
   | 'artifact.created'
   | 'policy.denied'
-  | 'agent.spawned';
+  | 'agent.spawned'
+  | 'model.provider.selected'
+  | 'model.request'
+  | 'model.response'
+  | 'model.error'
+  | 'model.tool.request';
 
 export interface GatewayEvent {
   type: GatewayEventType;

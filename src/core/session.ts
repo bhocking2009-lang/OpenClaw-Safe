@@ -60,6 +60,8 @@ export class SessionStore {
         escalation_state TEXT,
         delegation_depth INTEGER NOT NULL DEFAULT 0,
         budget_cap INTEGER,
+        provider_name TEXT,
+        model_name TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(session_id) REFERENCES sessions(id)
@@ -198,6 +200,8 @@ export class SessionStore {
     deadline?: string;
     delegationDepth?: number;
     budgetCap?: number;
+    providerName?: string;
+    modelName?: string;
   }): Task {
     const now = new Date().toISOString();
     const task: Task = {
@@ -214,6 +218,8 @@ export class SessionStore {
       retryCount: 3,
       delegationDepth: params.delegationDepth ?? 0,
       budgetCap: params.budgetCap,
+      providerName: params.providerName,
+      modelName: params.modelName,
       createdAt: now,
       updatedAt: now,
     };
@@ -222,8 +228,9 @@ export class SessionStore {
         `INSERT INTO tasks
           (id, session_id, title, state, owner_id, executor_id, parent_task_id,
            dependency_ids, sandbox_class, capability_set, deadline, retry_count,
-           escalation_state, delegation_depth, budget_cap, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           escalation_state, delegation_depth, budget_cap, provider_name, model_name,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.id,
@@ -241,6 +248,8 @@ export class SessionStore {
         task.escalationState ?? null,
         task.delegationDepth,
         task.budgetCap ?? null,
+        task.providerName ?? null,
+        task.modelName ?? null,
         task.createdAt,
         task.updatedAt
       );
@@ -371,6 +380,8 @@ interface RawTask {
   escalation_state: string | null;
   delegation_depth: number;
   budget_cap: number | null;
+  provider_name: string | null;
+  model_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -406,6 +417,8 @@ function deserializeTask(row: RawTask): Task {
     escalationState: row.escalation_state ?? undefined,
     delegationDepth: row.delegation_depth ?? 0,
     budgetCap: row.budget_cap ?? undefined,
+    providerName: row.provider_name ?? undefined,
+    modelName: row.model_name ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

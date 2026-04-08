@@ -93,6 +93,12 @@ export interface GatewayConfig {
   dbPath: string;
   /** Shared secret for gateway authentication. */
   gatewaySecret: string;
+  /**
+   * When true, gateway.start() will probe the configured modelProvider and
+   * throw if it is unreachable. Prevents silent stub-only operation in
+   * production.  Default: false.
+   */
+  requireModelProvider?: boolean;
 }
 
 const DEFAULT_CONFIG: GatewayConfig = {
@@ -100,6 +106,7 @@ const DEFAULT_CONFIG: GatewayConfig = {
   port: 4242,
   dbPath: ':memory:',
   gatewaySecret: '',
+  requireModelProvider: false,
 };
 
 export interface GatewayDependencies {
@@ -123,6 +130,16 @@ export interface GatewayDependencies {
    * fully backed by the store and all actions are audited.
    */
   pluginStore?: PluginStore;
+  /**
+   * The active model provider bound to this gateway instance.
+   * When provided:
+   *   - /health includes { modelProvider: { name, model, available } }
+   *   - GET /v1/model/status returns detailed provider info
+   *   - start() probes the provider (throws if requireModelProvider=true and probe fails)
+   *   - a model.provider.selected audit event is written on startup
+   * When omitted the gateway operates without a bound model (stub/test mode).
+   */
+  modelProvider?: import('../core/agent').ModelProvider;
 }
 
 export class Gateway {
@@ -135,6 +152,8 @@ export class Gateway {
   private agents: Map<string, Agent> = new Map();
   private plugins: Map<string, PluginManifest> = new Map();
   private wsClients: Set<WebSocket> = new Set();
+  /** Cached result of the last provider probe (updated on start()). */
+  private modelProviderAvailable: boolean | null = null;
 
   constructor(config: Partial<GatewayConfig>, deps: GatewayDependencies) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -189,12 +208,37 @@ export class Gateway {
 
     // Health check (unauthenticated)
     this.app.get('/health', (_req, res) => {
-      res.json({ status: 'ok', version: '1.0.0' });
+      const mp = this.deps.modelProvider;
+      const health: Record<string, unknown> = { status: 'ok', version: '1.0.0' };
+      if (mp) {
+        health['modelProvider'] = {
+          name: mp.name,
+          model: mp.model ?? null,
+          available: this.modelProviderAvailable,
+        };
+      }
+      res.json(health);
     });
 
     // ----- Auth / Identity -----
     r.get('/auth/principals', (_req, res) => {
       res.json({ principals: Array.from(this.principals.values()) });
+    });
+
+    // ----- Model provider status -----
+    r.get('/model/status', (_req, res) => {
+      const mp = this.deps.modelProvider;
+      if (!mp) {
+        res.json({ bound: false, message: 'No model provider configured' });
+        return;
+      }
+      res.json({
+        bound: true,
+        name: mp.name,
+        model: mp.model ?? null,
+        available: this.modelProviderAvailable,
+        checkedAt: new Date().toISOString(),
+      });
     });
 
     r.post('/auth/principals', (req, res) => {
@@ -566,6 +610,10 @@ export class Gateway {
         sandboxClass?: unknown;
         deadline?: unknown;
         budgetCap?: unknown;
+        /** Explicit provider binding for this child task (e.g. "ollama"). */
+        providerName?: unknown;
+        /** Explicit model binding for this child task (e.g. "llama3.2"). */
+        modelName?: unknown;
       };
 
       if (!body.title || typeof body.title !== 'string') {
@@ -687,6 +735,10 @@ export class Gateway {
         }
       }
 
+      // Validate optional provider/model binding
+      const providerName = typeof body.providerName === 'string' ? body.providerName : undefined;
+      const modelName = typeof body.modelName === 'string' ? body.modelName : undefined;
+
       const childTask = this.deps.sessionStore.createTask({
         sessionId: parent.sessionId,
         title: body.title,
@@ -697,7 +749,24 @@ export class Gateway {
         deadline: typeof body.deadline === 'string' ? body.deadline : undefined,
         delegationDepth: childDepth,
         budgetCap,
+        providerName,
+        modelName,
       });
+
+      // Emit model binding audit event when provider/model are explicitly set
+      if (providerName || modelName) {
+        this.deps.auditLog.write({
+          sessionId: parent.sessionId,
+          taskId: childTask.id,
+          principalId: parent.ownerId,
+          eventType: 'delegation.model.bound',
+          startedAt: now,
+          finishedAt: now,
+          modelProvider: providerName,
+          modelName: modelName,
+          sessionDelta: { parentTaskId: parent.id, providerName, modelName },
+        });
+      }
 
       // Emit budget allocation audit event when a budgetCap is set
       if (budgetCap !== undefined) {
@@ -1429,10 +1498,51 @@ export class Gateway {
   // ---------------------------------------------------------------------------
 
   start(): Promise<void> {
-    return new Promise((resolve) => {
-      this.server.listen(this.config.port, this.config.host, () => {
-        resolve();
-      });
+    return new Promise((resolve, reject) => {
+      // Probe the model provider before binding the port
+      const probeAndStart = async () => {
+        const mp = this.deps.modelProvider;
+        if (mp) {
+          const available = mp.probe ? await mp.probe() : true;
+          this.modelProviderAvailable = available;
+
+          // Write a model.provider.selected audit record so the operator can
+          // see provider selection in replay/export even without a session.
+          this.deps.auditLog.write({
+            sessionId: 'gateway',
+            principalId: 'system',
+            eventType: 'model.provider.selected',
+            startedAt: new Date().toISOString(),
+            modelProvider: mp.name,
+            modelName: mp.model ?? undefined,
+            sessionDelta: { available },
+          });
+
+          // Emit the event to any pre-connected WebSocket clients (unlikely at
+          // startup, but consistent with the event model).
+          this.emitEvent({
+            type: 'model.provider.selected',
+            payload: { provider: mp.name, model: mp.model ?? null, available },
+            emittedAt: new Date().toISOString(),
+          });
+
+          if (this.config.requireModelProvider && !available) {
+            reject(
+              new Error(
+                `Model provider "${mp.name}" is not reachable and requireModelProvider=true. ` +
+                  `Ensure the provider is running before starting the gateway.`
+              )
+            );
+            return;
+          }
+        }
+
+        this.server.listen(this.config.port, this.config.host, () => {
+          resolve();
+        });
+      };
+
+      probeAndStart().catch(reject);
     });
   }
 

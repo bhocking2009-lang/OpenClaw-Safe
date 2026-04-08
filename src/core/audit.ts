@@ -45,7 +45,9 @@ export class AuditLog {
         session_delta TEXT,
         error TEXT,
         budget_consumed INTEGER,
-        budget_remaining INTEGER
+        budget_remaining INTEGER,
+        model_provider TEXT,
+        model_name TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_records(session_id);
       CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_records(task_id);
@@ -65,13 +67,13 @@ export class AuditLog {
         params, policy_decision, approval_path, runtime_target,
         started_at, finished_at, stdout, stderr, file_diffs,
         network_trace_summary, artifacts, session_delta, error,
-        budget_consumed, budget_remaining
+        budget_consumed, budget_remaining, model_provider, model_name
       ) VALUES (
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?
+        ?, ?, ?, ?
       )
     `);
 
@@ -96,7 +98,9 @@ export class AuditLog {
       record.sessionDelta ? JSON.stringify(record.sessionDelta) : null,
       record.error ?? null,
       record.budgetConsumed ?? null,
-      record.budgetRemaining ?? null
+      record.budgetRemaining ?? null,
+      record.modelProvider ?? null,
+      record.modelName ?? null,
     );
 
     return { id, ...record };
@@ -202,6 +206,8 @@ interface RawRow {
   error: string | null;
   budget_consumed: number | null;
   budget_remaining: number | null;
+  model_provider: string | null;
+  model_name: string | null;
 }
 
 function deserializeRow(row: RawRow): AuditRecord {
@@ -231,5 +237,7 @@ function deserializeRow(row: RawRow): AuditRecord {
     error: row.error ?? undefined,
     budgetConsumed: row.budget_consumed ?? undefined,
     budgetRemaining: row.budget_remaining ?? undefined,
+    modelProvider: row.model_provider ?? undefined,
+    modelName: row.model_name ?? undefined,
   };
 }

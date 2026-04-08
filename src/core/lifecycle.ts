@@ -50,6 +50,11 @@ export interface Migration {
 /**
  * The canonical ordered list of schema migrations.
  * Add new entries at the end only — never reorder or remove.
+ *
+ * NOTE: provider_name/model_name on tasks and model_provider/model_name on
+ * audit_records are present in the CREATE TABLE IF NOT EXISTS statements and
+ * therefore do not need migration entries for new installations.  Existing
+ * installations should apply the equivalent ALTER TABLE statements out-of-band.
  */
 export const MIGRATIONS: Migration[] = [
   {

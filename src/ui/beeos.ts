@@ -277,6 +277,7 @@ details[open] summary{color:var(--fg);border-bottom:1px solid var(--br)}
   <div id="content"><div class="empty spinner"> Loading</div></div>
   <div id="statusbar">
     <span id="status-route">&gt;&gt; /sessions</span>
+    <span id="status-model" class="dim"></span>
     <span id="status-time"></span>
   </div>
 </div>
@@ -368,6 +369,29 @@ function tick() {
   el('status-time') && (el('status-time').textContent = new Date().toLocaleTimeString());
 }
 setInterval(tick, 1000); tick();
+
+// ---------------------------------------------------------------------------
+// Model provider status (fetched from /health, shown in status bar)
+// ---------------------------------------------------------------------------
+async function refreshModelStatus() {
+  try {
+    const res = await fetch('/health');
+    if (!res.ok) return;
+    const data = await res.json();
+    const mp = data.modelProvider;
+    const statusEl = el('status-model');
+    if (!statusEl) return;
+    if (mp) {
+      const avail = mp.available === true ? 'ok' : mp.available === false ? 'err' : 'dim';
+      statusEl.innerHTML = '<span class="' + avail + '">\u25CF</span> ' +
+        esc(mp.name) + (mp.model ? '/' + esc(mp.model) : '');
+    } else {
+      statusEl.innerHTML = '<span class="dim">\u25CB stub</span>';
+    }
+  } catch(e) { /* network not ready yet */ }
+}
+// Refresh model status every 30 s
+setInterval(refreshModelStatus, 30000);
 
 // ---------------------------------------------------------------------------
 // Navigation
@@ -473,7 +497,7 @@ async function renderReplay(sessionId) {
   html += '<div class="view-title">REPLAY VIEWER</div>';
   html += '<div class="view-actions">';
   html += '<span class="tag ' + (valid ? 'tag-ok' : 'tag-err') + '">' + (valid ? 'INTEGRITY OK' : 'INTEGRITY FAIL') + '</span>';
-  html += '<button onclick="location.hash=\\'#sessions\\'">BACK</button>';
+  html += '<button id="back-btn">BACK</button>';
   html += '</div></div>';
 
   // Session info bar
@@ -502,6 +526,7 @@ async function renderReplay(sessionId) {
         : type.startsWith('approval') ? 'approvals'
         : type.startsWith('tool') || type.startsWith('budget') || type.startsWith('browser') ? 'executions'
         : type.startsWith('task') || type.startsWith('delegation') ? 'tasks'
+        : type.startsWith('model') ? 'model'
         : 'other';
       if (!groups[cat]) groups[cat] = [];
       groups[cat].push(rec);
@@ -511,6 +536,8 @@ async function renderReplay(sessionId) {
     html += buildEventSection('POLICY DECISIONS', groups['decisions'] || [], 'decisions');
     // Executions
     html += buildEventSection('TOOL EXECUTIONS', groups['executions'] || [], 'executions');
+    // Model events
+    html += buildModelEventSection(groups['model'] || []);
     // Approvals
     html += buildEventSection('APPROVALS', groups['approvals'] || [], 'approvals');
     // Tasks
@@ -540,9 +567,63 @@ async function renderReplay(sessionId) {
   }
 
   setContent(html);
+  // Bind Back button after DOM insertion (avoids inline onclick quoting issues)
+  const backBtn = el('back-btn');
+  if (backBtn) {
+    backBtn.addEventListener('click', function() { location.hash = '#sessions'; });
+  }
 }
 
-function buildEventSection(title, records, key) {
+function buildModelEventSection(records) {
+  const open = records.length > 0;
+  let h = '<details' + (open ? ' open' : '') + '>';
+  h += '<summary><span>MODEL EVENTS (' + records.length + ')</span></summary>';
+  if (!records.length) {
+    h += '<div class="details-body dim">No model events recorded. Bind a ModelProvider to see inference activity.</div>';
+    h += '</details>';
+    return h;
+  }
+  h += '<div class="details-body">';
+  for (const rec of records) {
+    const type = rec.eventType || '—';
+    const isError = type === 'model.error';
+    const isRequest = type === 'model.request';
+    const isResponse = type === 'model.response';
+    const isToolReq = type === 'model.tool.request';
+    const isSelected = type === 'model.provider.selected';
+    const delta = rec.sessionDelta || {};
+    h += '<div class="event-row' + (isError ? ' err' : '') + '">';
+    h += '<div class="event-type' + (isError ? ' err' : isResponse ? ' ok' : isSelected ? ' hi' : '') + '">' + esc(type) + '</div>';
+    h += '<div class="dim">';
+    const provider = delta.provider || delta.providerName || rec.modelProvider || '';
+    const model = delta.model || delta.modelName || rec.modelName || '';
+    if (provider || model) {
+      h += '<span class="hi">' + esc(provider) + '</span>';
+      if (model) h += '<span class="dim">/' + esc(model) + '</span> ';
+    }
+    if (isRequest) {
+      h += '<span class="dim">round:' + esc(String(delta.round || '?')) + ' msgs:' + esc(String(delta.messageCount || '?')) + '</span>';
+    }
+    if (isResponse) {
+      h += '<span class="ok">tokens:' + esc(String((delta.promptTokens || 0) + (delta.completionTokens || 0))) + '</span>';
+      if (delta.toolCallCount) h += ' <span class="warn">tool_calls:' + esc(String(delta.toolCallCount)) + '</span>';
+    }
+    if (isToolReq) {
+      h += '<span class="warn">tool:' + esc(String(delta.toolName || '?')) + '</span>';
+    }
+    if (isError) {
+      h += '<span class="err"> ' + esc(String(rec.error || delta.error || '')) + '</span>';
+    }
+    if (isSelected) {
+      h += '<span class="' + (delta.available ? 'ok' : 'err') + '">' + (delta.available ? 'AVAILABLE' : 'UNAVAILABLE') + '</span>';
+    }
+    h += '</div>';
+    h += '<div class="dim" style="text-align:right">' + esc(fmtDate(rec.startedAt)) + '</div>';
+    h += '</div>';
+  }
+  h += '</div></details>';
+  return h;
+}
   const open = key === 'decisions' || key === 'executions';
   let h = '<details' + (open ? ' open' : '') + '><summary><span>' + esc(title) + ' (' + records.length + ')</span></summary>';
   if (!records.length) {
@@ -877,7 +958,7 @@ const BOOT_LINES = [
 
 function runBoot() {
   const log = el('boot-log');
-  BOOT_LINES.forEach(function(line, i) {
+  BOOT_LINES.forEach(function(line) {
     setTimeout(function() {
       const div = document.createElement('div');
       div.className = 'boot-line';
@@ -886,6 +967,25 @@ function runBoot() {
       log.appendChild(div);
     }, line.delay);
   });
+  // Fetch model provider status during boot and show it in the boot log
+  fetch('/health').then(function(res) { return res.json(); }).then(function(data) {
+    const mp = data.modelProvider;
+    const div = document.createElement('div');
+    div.className = 'boot-line';
+    div.style.animationDelay = '0s';
+    if (mp) {
+      const label = esc(mp.name) + (mp.model ? '/' + esc(mp.model) : '');
+      const avail = mp.available === true;
+      div.innerHTML = 'Model provider: ' + label +
+        '&nbsp;&nbsp;&nbsp;<span class="' + (avail ? 'ok' : 'err') + '">' +
+        (avail ? 'AVAILABLE' : 'UNREACHABLE') + '</span>';
+    } else {
+      div.innerHTML = 'Model provider: <span class="dim">none (stub mode)</span>';
+    }
+    log.appendChild(div);
+    refreshModelStatus();
+  }).catch(function() { /* network not ready */ });
+
   setTimeout(function() {
     const boot = el('boot');
     if (boot) { boot.style.opacity = '0'; setTimeout(function() { boot.style.display = 'none'; }, 400); }

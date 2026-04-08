@@ -18,3 +18,4 @@ export * from './core/plugin-store';
 export * from './channels/adapter';
 export * from './plugins/registry';
 export * from './workers/sandbox';
+export * from './providers/ollama';
