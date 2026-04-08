@@ -278,6 +278,7 @@ details[open] summary{color:var(--fg);border-bottom:1px solid var(--br)}
   <div id="statusbar">
     <span id="status-route">&gt;&gt; /sessions</span>
     <span id="status-model" class="dim"></span>
+    <span id="status-scheduler" class="dim"></span>
     <span id="status-time"></span>
   </div>
 </div>
@@ -392,6 +393,32 @@ async function refreshModelStatus() {
 }
 // Refresh model status every 30 s
 setInterval(refreshModelStatus, 30000);
+
+// ---------------------------------------------------------------------------
+// Scheduler pool status (fetched from /v1/scheduler/pool, shown in status bar)
+// ---------------------------------------------------------------------------
+async function refreshSchedulerStatus() {
+  try {
+    const headers = token ? { 'X-Gateway-Token': token } : {};
+    const res = await fetch(API + '/scheduler/pool', { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    const statusEl = el('status-scheduler');
+    if (!statusEl) return;
+    if (!data.bound) {
+      statusEl.innerHTML = '';
+      return;
+    }
+    const pool = (data.status && data.status.pool) || [];
+    const busy = pool.filter(function(e) { return e.activeLeasesCount > 0; }).length;
+    const queued = pool.reduce(function(s, e) { return s + (e.queueDepth || 0); }, 0);
+    const tag = busy > 0 ? 'warn' : 'dim';
+    statusEl.innerHTML = '<span class="' + tag + '">\u25A0</span> sched:' +
+      busy + '/' + pool.length + (queued > 0 ? ' q:' + queued : '');
+  } catch(e) { /* network not ready yet */ }
+}
+// Refresh scheduler status every 15 s
+setInterval(refreshSchedulerStatus, 15000);
 
 // ---------------------------------------------------------------------------
 // Navigation
@@ -526,7 +553,7 @@ async function renderReplay(sessionId) {
         : type.startsWith('approval') ? 'approvals'
         : type.startsWith('tool') || type.startsWith('budget') || type.startsWith('browser') ? 'executions'
         : type.startsWith('task') || type.startsWith('delegation') ? 'tasks'
-        : type.startsWith('model') ? 'model'
+        : type.startsWith('model') || type.startsWith('scheduler') ? 'model'
         : 'other';
       if (!groups[cat]) groups[cat] = [];
       groups[cat].push(rec);
@@ -577,7 +604,7 @@ async function renderReplay(sessionId) {
 function buildModelEventSection(records) {
   const open = records.length > 0;
   let h = '<details' + (open ? ' open' : '') + '>';
-  h += '<summary><span>MODEL EVENTS (' + records.length + ')</span></summary>';
+  h += '<summary><span>MODEL &amp; SCHEDULER EVENTS (' + records.length + ')</span></summary>';
   if (!records.length) {
     h += '<div class="details-body dim">No model events recorded. Bind a ModelProvider to see inference activity.</div>';
     h += '</details>';
@@ -591,31 +618,60 @@ function buildModelEventSection(records) {
     const isResponse = type === 'model.response';
     const isToolReq = type === 'model.tool.request';
     const isSelected = type === 'model.provider.selected';
+    const isSchedAssigned = type === 'scheduler.model.assigned';
+    const isSchedUnavail = type === 'scheduler.model.unavailable';
+    const isSchedQueued = type === 'scheduler.task.queued';
+    const isSchedStarted = type === 'scheduler.task.started';
+    const isSchedDone = type === 'scheduler.task.completed' || type === 'scheduler.task.released';
+    const isSchedEvent = type.startsWith('scheduler.');
     const delta = rec.sessionDelta || {};
+    const payload = rec.params || {};
     h += '<div class="event-row' + (isError ? ' err' : '') + '">';
-    h += '<div class="event-type' + (isError ? ' err' : isResponse ? ' ok' : isSelected ? ' hi' : '') + '">' + esc(type) + '</div>';
+    h += '<div class="event-type' +
+      (isError ? ' err' : isResponse || isSchedDone ? ' ok' : isSelected || isSchedAssigned || isSchedStarted ? ' hi' : isSchedUnavail || isSchedQueued ? ' warn' : '') +
+      '">' + esc(type) + '</div>';
     h += '<div class="dim">';
-    const provider = delta.provider || delta.providerName || rec.modelProvider || '';
-    const model = delta.model || delta.modelName || rec.modelName || '';
+    const provider = payload.providerName || delta.provider || delta.providerName || rec.modelProvider || '';
+    const model = payload.modelName || delta.model || delta.modelName || rec.modelName || '';
     if (provider || model) {
       h += '<span class="hi">' + esc(provider) + '</span>';
       if (model) h += '<span class="dim">/' + esc(model) + '</span> ';
     }
     if (isRequest) {
-      h += '<span class="dim">round:' + esc(String(delta.round || '?')) + ' msgs:' + esc(String(delta.messageCount || '?')) + '</span>';
+      h += '<span class="dim">round:' + esc(String(delta.round || payload.round || '?')) + ' msgs:' + esc(String(delta.messageCount || payload.messageCount || '?')) + '</span>';
     }
     if (isResponse) {
-      h += '<span class="ok">tokens:' + esc(String((delta.promptTokens || 0) + (delta.completionTokens || 0))) + '</span>';
-      if (delta.toolCallCount) h += ' <span class="warn">tool_calls:' + esc(String(delta.toolCallCount)) + '</span>';
+      h += '<span class="ok">tokens:' + esc(String((delta.promptTokens || payload.promptTokens || 0) + (delta.completionTokens || payload.completionTokens || 0))) + '</span>';
+      if (delta.toolCallCount || payload.toolCallCount) h += ' <span class="warn">tool_calls:' + esc(String(delta.toolCallCount || payload.toolCallCount)) + '</span>';
     }
     if (isToolReq) {
-      h += '<span class="warn">tool:' + esc(String(delta.toolName || '?')) + '</span>';
+      h += '<span class="warn">tool:' + esc(String(delta.toolName || payload.toolName || '?')) + '</span>';
     }
     if (isError) {
-      h += '<span class="err"> ' + esc(String(rec.error || delta.error || '')) + '</span>';
+      h += '<span class="err"> ' + esc(String(rec.error || delta.error || payload.error || '')) + '</span>';
     }
     if (isSelected) {
-      h += '<span class="' + (delta.available ? 'ok' : 'err') + '">' + (delta.available ? 'AVAILABLE' : 'UNAVAILABLE') + '</span>';
+      h += '<span class="' + (delta.available || payload.available ? 'ok' : 'err') + '">' + (delta.available || payload.available ? 'AVAILABLE' : 'UNAVAILABLE') + '</span>';
+    }
+    if (isSchedAssigned || isSchedStarted) {
+      h += '<span class="ok">LEASE GRANTED</span>';
+      if (payload.leaseId) h += ' <span class="dim">lease:' + esc(String(payload.leaseId)) + '</span>';
+      if (payload.activeCount !== undefined) h += ' <span class="dim">active:' + esc(String(payload.activeCount)) + '/' + esc(String(payload.maxConcurrent)) + '</span>';
+    }
+    if (isSchedUnavail) {
+      h += '<span class="warn">CAPACITY FULL</span>';
+      h += ' <span class="dim">active:' + esc(String(payload.activeCount || '?')) + '/' + esc(String(payload.maxConcurrent || '?')) + '</span>';
+    }
+    if (isSchedQueued) {
+      h += '<span class="warn">QUEUED</span>';
+      if (payload.queueDepth !== undefined) h += ' <span class="dim">queue:' + esc(String(payload.queueDepth)) + '</span>';
+    }
+    if (isSchedDone) {
+      h += '<span class="ok">' + esc(type === 'scheduler.task.completed' ? 'COMPLETED' : 'RELEASED') + '</span>';
+      if (payload.leaseId) h += ' <span class="dim">lease:' + esc(String(payload.leaseId)) + '</span>';
+    }
+    if (isSchedEvent && payload.tier) {
+      h += ' <span class="tag tag-info">' + esc(String(payload.tier)) + '</span>';
     }
     h += '</div>';
     h += '<div class="dim" style="text-align:right">' + esc(fmtDate(rec.startedAt)) + '</div>';
@@ -984,6 +1040,22 @@ function runBoot() {
     }
     log.appendChild(div);
     refreshModelStatus();
+    // Also show scheduler pool status in boot log
+    const schedHeaders = token ? { 'X-Gateway-Token': token } : {};
+    fetch(API + '/scheduler/pool', { headers: schedHeaders }).then(function(r) { return r.json(); }).then(function(sd) {
+      if (sd.bound && sd.status && sd.status.pool) {
+        const poolDiv = document.createElement('div');
+        poolDiv.className = 'boot-line';
+        poolDiv.style.animationDelay = '0s';
+        const entries = sd.status.pool.map(function(e) {
+          return esc(e.providerName) + '/' + esc(e.modelName) +
+            ' (' + esc(e.tier) + ', max:' + esc(String(e.maxConcurrent)) + ')';
+        }).join(', ');
+        poolDiv.innerHTML = 'Scheduler pool: ' + entries + '&nbsp;&nbsp;&nbsp;<span class="ok">OK</span>';
+        log.appendChild(poolDiv);
+        refreshSchedulerStatus();
+      }
+    }).catch(function() { /* scheduler not configured */ });
   }).catch(function() { /* network not ready */ });
 
   setTimeout(function() {

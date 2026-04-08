@@ -48,6 +48,7 @@ import { formatReplaySummary, formatReplayDiff, formatPolicyExplanation, formatI
 import { BrowserWorker } from '../workers/browser';
 import { PluginManifestSchema } from '../plugins/registry';
 import { createBeeOSRouter } from '../ui/beeos';
+import { ModelScheduler, DEFAULT_MODEL_POOL, ModelPoolEntry } from './scheduler';
 
 /** Maximum allowed delegation depth for child tasks. */
 export const MAX_DELEGATION_DEPTH = 5;
@@ -140,6 +141,14 @@ export interface GatewayDependencies {
    * When omitted the gateway operates without a bound model (stub/test mode).
    */
   modelProvider?: import('../core/agent').ModelProvider;
+  /**
+   * Optional sub-agent model scheduler.
+   * When provided, the delegate route will acquire a lease from the scheduler
+   * before creating a child task with an explicit providerName/modelName.
+   * Scheduler status is exposed at GET /v1/scheduler/pool.
+   * When omitted, delegation continues without concurrency enforcement.
+   */
+  modelScheduler?: ModelScheduler;
 }
 
 export class Gateway {
@@ -239,6 +248,16 @@ export class Gateway {
         available: this.modelProviderAvailable,
         checkedAt: new Date().toISOString(),
       });
+    });
+
+    // ----- Scheduler pool status -----
+    r.get('/scheduler/pool', (_req, res) => {
+      const sched = this.deps.modelScheduler;
+      if (!sched) {
+        res.json({ bound: false, message: 'No model scheduler configured' });
+        return;
+      }
+      res.json({ bound: true, status: sched.getStatus() });
     });
 
     r.post('/auth/principals', (req, res) => {
@@ -600,7 +619,7 @@ export class Gateway {
      * Child count per parent is capped at MAX_CHILDREN_PER_TASK.
      * An optional budgetCap limits the token budget consumed by this child.
      */
-    r.post('/tasks/:id/delegate', (req, res) => {
+    r.post('/tasks/:id/delegate', async (req, res) => {
       const parent = this.deps.sessionStore.getTask(req.params.id);
       if (!parent) { res.status(404).json({ error: 'Parent task not found' }); return; }
 
@@ -739,6 +758,56 @@ export class Gateway {
       const providerName = typeof body.providerName === 'string' ? body.providerName : undefined;
       const modelName = typeof body.modelName === 'string' ? body.modelName : undefined;
 
+      // Scheduler integration: when a scheduler is configured and the child task
+      // specifies a provider/model, validate the model is in the pool.
+      // The lease is acquired asynchronously before the child task is persisted,
+      // so no task exists in a "running without a lease" state.
+      let schedulerLeaseId: string | undefined;
+      if (providerName && modelName && this.deps.modelScheduler) {
+        const entry = this.deps.modelScheduler.getPoolEntry(providerName, modelName);
+        if (!entry) {
+          this.deps.auditLog.write({
+            sessionId: parent.sessionId,
+            taskId: parent.id,
+            principalId: parent.ownerId,
+            eventType: 'delegation.model.not.in.pool',
+            startedAt: now,
+            finishedAt: now,
+            modelProvider: providerName,
+            modelName,
+            error: `Model "${providerName}/${modelName}" is not in the scheduler pool.`,
+          });
+          res.status(400).json({
+            error: `Model "${providerName}/${modelName}" is not in the scheduler pool. Check GET /v1/scheduler/pool for available models.`,
+          });
+          return;
+        }
+        try {
+          const lease = await this.deps.modelScheduler.acquireLease(
+            'pending-' + now,  // placeholder task ID — real task ID assigned after createTask
+            providerName,
+            modelName,
+          );
+          schedulerLeaseId = lease.id;
+        } catch (err) {
+          this.deps.auditLog.write({
+            sessionId: parent.sessionId,
+            taskId: parent.id,
+            principalId: parent.ownerId,
+            eventType: 'scheduler.lease.error',
+            startedAt: now,
+            finishedAt: now,
+            modelProvider: providerName,
+            modelName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          res.status(503).json({
+            error: `Scheduler lease error: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+      }
+
       const childTask = this.deps.sessionStore.createTask({
         sessionId: parent.sessionId,
         title: body.title,
@@ -799,7 +868,7 @@ export class Gateway {
       }
 
       this.emitEvent({ type: 'task.updated', payload: { task: childTask }, emittedAt: new Date().toISOString() });
-      res.status(201).json({ childTask });
+      res.status(201).json({ childTask, schedulerLeaseId });
     });
 
     /**
@@ -834,6 +903,8 @@ export class Gateway {
               sessionDelta: { cancelledBy: req.params.id },
             });
             this.emitEvent({ type: 'task.updated', payload: { task: updated }, emittedAt: now });
+            // Release any scheduler lease held by this task
+            this.deps.modelScheduler?.releaseByTaskId(task.id, 'released');
           }
         }
         // Recurse into children regardless of parent terminal state
@@ -854,6 +925,29 @@ export class Gateway {
       const tree = this.deps.sessionStore.getDelegationTree(req.params.id);
       if (!tree) { res.status(404).json({ error: 'Task not found' }); return; }
       res.json({ tree });
+    });
+
+    /**
+     * Release a scheduler lease for a task.
+     * Callers should invoke this when a child task completes or fails so the
+     * scheduler can free the slot and advance its wait queue.
+     * outcome: 'completed' (success) | 'released' (failure / cancel / timeout).
+     */
+    r.post('/tasks/:id/scheduler/release', (req, res) => {
+      const sched = this.deps.modelScheduler;
+      if (!sched) {
+        res.status(409).json({ error: 'No model scheduler configured on this gateway' });
+        return;
+      }
+      const { leaseId, outcome } = req.body as { leaseId?: unknown; outcome?: unknown };
+      if (!leaseId || typeof leaseId !== 'string') {
+        res.status(400).json({ error: 'leaseId is required and must be a string' });
+        return;
+      }
+      const resolvedOutcome: 'completed' | 'released' =
+        outcome === 'completed' ? 'completed' : 'released';
+      sched.releaseLease(leaseId, resolvedOutcome);
+      res.json({ released: true, leaseId, outcome: resolvedOutcome });
     });
 
     // ----- Approvals -----

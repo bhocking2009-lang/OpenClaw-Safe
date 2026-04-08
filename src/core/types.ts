@@ -400,7 +400,13 @@ export type GatewayEventType =
   | 'model.request'
   | 'model.response'
   | 'model.error'
-  | 'model.tool.request';
+  | 'model.tool.request'
+  | 'scheduler.model.assigned'
+  | 'scheduler.model.unavailable'
+  | 'scheduler.task.queued'
+  | 'scheduler.task.started'
+  | 'scheduler.task.completed'
+  | 'scheduler.task.released';
 
 export interface GatewayEvent {
   type: GatewayEventType;
