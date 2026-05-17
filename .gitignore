@@ -1,0 +1,34 @@
+# Logs
+*.log
+logs/
+*.out
+
+# Temp files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local user config/profile/backup artifacts
+config/openclaw-safe.local.json
+config/*.user.json
+*.bak
+*.backup
+backups/
+
+# Build artifacts
+bin/
+obj/
+dist/
+build/
+
+# PowerShell artifacts
+*.ps1xml

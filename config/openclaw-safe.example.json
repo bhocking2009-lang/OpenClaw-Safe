@@ -1,0 +1,27 @@
+{
+  "openClaw": {
+    "installPath": "C:\\Games\\OpenClaw"
+  },
+  "profile": {
+    "profilePath": "%USERPROFILE%\\OpenClaw-Safe\\profile"
+  },
+  "logging": {
+    "enabled": true,
+    "logPath": "%USERPROFILE%\\OpenClaw-Safe\\logs",
+    "level": "info"
+  },
+  "backups": {
+    "enabled": true,
+    "backupPath": "%USERPROFILE%\\OpenClaw-Safe\\backups",
+    "maxBackups": 5
+  },
+  "network": {
+    "enabled": false,
+    "bindAddress": "127.0.0.1",
+    "port": 0
+  },
+  "safeMode": {
+    "enabled": true,
+    "readOnlyDefaults": true
+  }
+}
