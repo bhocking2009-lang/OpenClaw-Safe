@@ -30,5 +30,27 @@ obj/
 dist/
 build/
 
+# Python cache/artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node cache/artifacts
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.parcel-cache/
+.next/
+.nuxt/
+coverage/
+
 # PowerShell artifacts
 *.ps1xml

@@ -79,6 +79,20 @@ try {
                     Write-Ok "Config field present: $required"
                 }
             }
+
+            if ([string]::IsNullOrWhiteSpace($config.openClaw.installPath)) {
+                Write-Err "openClaw.installPath is empty."
+            }
+            elseif (-not (Test-Path -LiteralPath $config.openClaw.installPath)) {
+                Write-Warn "openClaw.installPath does not currently exist: $($config.openClaw.installPath)"
+            }
+
+            if ($null -eq $config.network.enabled) {
+                Write-Err "network.enabled is not set."
+            }
+            elseif ($config.network.enabled -eq $true) {
+                Write-Warn "network.enabled is true. Local-only safety defaults are reduced."
+            }
         }
         catch {
             Write-Err "Local config JSON is invalid: $($_.Exception.Message)"

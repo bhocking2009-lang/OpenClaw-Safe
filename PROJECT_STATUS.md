@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 3 complete: minimum working structure is in place for a finishable v1.0 baseline.
+Phase 1 foundation complete: minimum working structure is in place for a finishable v1.0 baseline.
 
 ## Completed
 

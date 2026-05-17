@@ -5,7 +5,7 @@ This project focuses on local safety defaults, simple setup, and easy verificati
 
 ## Status
 
-- Current phase: v1 baseline implementation
+- Current phase: Phase 1 foundation complete (v1 baseline scaffolding)
 - Implementation path: **Option C** (documentation + security wrapper around an existing OpenClaw install)
 - Scope: home/local use only
 

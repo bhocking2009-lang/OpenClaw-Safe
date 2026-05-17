@@ -31,7 +31,7 @@ Check commas, quotes, and braces.
 
 ## OpenClaw install path is wrong
 
-**Symptom:** Verification reports missing install path.  
+**Symptom:** Verification warns that install path does not exist (or reports it is empty).  
 **Fix:** Edit `openClaw.installPath` in local config to a valid existing folder.
 
 ## Existing config was not overwritten
