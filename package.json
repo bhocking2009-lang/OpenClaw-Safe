@@ -11,9 +11,11 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "jest --forceExit",
-    "lint": "npm run typecheck",
-    "typecheck": "tsc --noEmit",
-    "check:boundaries": "node scripts/check-import-boundaries.mjs"
+    "lint:type": "tsc --noEmit",
+    "lint:boundaries": "node scripts/check-import-boundaries.mjs",
+    "lint": "npm run lint:type && npm run lint:boundaries",
+    "typecheck": "npm run lint:type",
+    "check:boundaries": "npm run lint:boundaries"
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
