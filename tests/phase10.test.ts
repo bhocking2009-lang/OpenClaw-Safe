@@ -264,9 +264,9 @@ describe('LifecycleManager.pruneAuditRecords()', () => {
     const { session } = makeSessionWithTask(stores, 'completed');
     const recentTs = new Date().toISOString();
     stores.auditLog.write({ sessionId: session.id, principalId: 'p', eventType: 'tool.started', toolName: 'x', startedAt: recentTs });
-    const result = mgr.pruneAuditRecords({ retentionClass: 'session', olderThanMs: 0 });
-    // The record is too new (started_at == cutoffAt is not < cutoffAt)
-    // olderThanMs=0 means cutoff=now, so records AT now are NOT older than now
+    const result = mgr.pruneAuditRecords({ retentionClass: 'session', olderThanMs: 60_000 });
+    // Use a stable 60s window to avoid flaky now-vs-now timing races.
+    // A record written "now" is newer than (not older than) cutoff=now-60s.
     expect(result.deleted).toBe(0);
     closeStores(stores);
   });
@@ -329,8 +329,8 @@ describe('LifecycleManager.pruneArtifacts()', () => {
     const stores = makeStores();
     const mgr = makeManager(stores);
     stores.artifactStore.store({ type: 'file', uri: '/new.txt', provenanceId: 'p1', checksum: 'c1', retentionClass: 'ephemeral' });
-    // olderThanMs=0 means cutoff=now; new artifact is NOT older
-    const result = mgr.pruneArtifacts({ retentionClass: 'ephemeral', olderThanMs: 0 });
+    // Use a stable 60s window to avoid flaky now-vs-now timing races.
+    const result = mgr.pruneArtifacts({ retentionClass: 'ephemeral', olderThanMs: 60_000 });
     expect(result.deleted).toBe(0);
     closeStores(stores);
   });
