@@ -44,7 +44,7 @@ Gateway starts at `http://127.0.0.1:4242`. BeeOS operator UI at `http://127.0.0.
 | 11 | Delegation maturity — tree reconstruction, budget partitioning, recursive cancellation, depth/child/loop guards | ✅ Complete |
 | 12 | Plugin / extension platform — manifest validation, lifecycle, broker-mediated invocation, audit visibility | ✅ Complete |
 
-735 tests across 25 suites. All passing.
+Current test suite status is validated in CI via `npm test`.
 
 ## Design Goals
 
@@ -106,13 +106,13 @@ Gateway starts at `http://127.0.0.1:4242`. BeeOS operator UI at `http://127.0.0.
 - Per-task capability leases
 - Low-trust principals restricted to Class A tools
 
-## Getting Started
+## Local Run Commands
 
 ```bash
 npm install
 npm run build
-npm start          # or: node dist/index.js
-openclaw start     # start gateway daemon
+npm start            # or: node dist/index.js
+npx openclaw start   # start gateway daemon via local CLI
 ```
 
 ### CLI Commands
